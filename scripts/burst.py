@@ -3,6 +3,7 @@ import asyncio
 import json
 import random
 import sys
+import os
 import time
 import uuid
 import httpx
@@ -261,15 +262,47 @@ async def run_scenario_stampede(client: BurstClient, args):
     p99 = percentile(latencies, 99)
     print(f"Latencies: p50={p50*1000:.1f}ms, p95={p95*1000:.1f}ms, p99={p99*1000:.1f}ms")
     
-    assert status_counts.get(500, 0) == 0, "5xx count must be 0"
-    assert status_counts.get(502, 0) == 0, "5xx count must be 0"
-    assert status_counts.get(503, 0) == 0, "5xx count must be 0"
+    if status_counts.get(500, 0) > 0 or status_counts.get(502, 0) > 0 or status_counts.get(503, 0) > 0:
+        print("[FAIL] 5xx count must be 0")
+        sys.exit(1)
     
     # Reconciliation
+    reserved_seats = {}
+    for st, body, _ in results:
+        if st == 201:
+            res_id = body.get("reservation_id")
+            for seat in body.get("seats", []):
+                if seat in reserved_seats and reserved_seats[seat] != res_id:
+                    print(f"[FAIL] Seat {seat} was reserved by both {reserved_seats[seat]} and {res_id}")
+                    sys.exit(1)
+                reserved_seats[seat] = res_id
+                
+    unique_seats_reserved = len(reserved_seats)
+    
     show = await client.get_show(show_id)
     print("\nShow Reconciliation:")
     print(f"Total: {show['total_seats']}, Available: {show['available']}, Confirmed/Held: {show['confirmed'] + show['held']}")
-    assert show['available'] + show['confirmed'] + show['held'] == show['total_seats'], "Invariant violation"
+    
+    if show['available'] + show['confirmed'] + show['held'] != show['total_seats']:
+        print("[FAIL] Invariant violation: total seats mismatch")
+        sys.exit(1)
+        
+    if unique_seats_reserved != (show['confirmed'] + show['held']):
+        print(f"[FAIL] Seat mismatch: unique seats in 201s ({unique_seats_reserved}) != confirmed+held in DB ({show['confirmed'] + show['held']})")
+        sys.exit(1)
+        
+    report = {
+        "throughput_req_per_sec": args.requests / elapsed,
+        "status_counts": status_counts,
+        "error_reasons": reasons,
+        "latency_ms": {
+            "p50": p50 * 1000,
+            "p95": p95 * 1000,
+            "p99": p99 * 1000
+        }
+    }
+    with open("burst_report.json", "w") as f:
+        json.dump(report, f, indent=2)
     
     print("\nMetrics (partial):")
     metrics = await client.get_metrics()
@@ -283,7 +316,7 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://localhost:8080")
     parser.add_argument("--concurrency", type=int, default=100)
-    parser.add_argument("--requests", type=int, default=2000) # reduced default for fast local run, use 20000 for full test
+    parser.add_argument("--requests", type=int, default=20000) # reduced default for fast local run, use 20000 for full test
     parser.add_argument("--users", type=int, default=500)
     parser.add_argument("--admin-key", default=os.getenv("ADMIN_KEY", ""))
     

@@ -120,7 +120,8 @@ def create_app() -> FastAPI:
         if content_length:
             try:
                 cl = int(content_length)
-                if cl > 65536:  # 64KB
+                print(f"Content length: {cl}")
+                if cl > 1048576:  # 1MB
                     return JSONResponse(
                         status_code=400,
                         content={"error": {"code": "invalid_request", "message": "Request body too large"}},
