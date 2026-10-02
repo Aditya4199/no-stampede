@@ -66,7 +66,7 @@ class BurstClient:
             status = resp.status_code
             body = resp.json()
         except Exception as e:
-            status = 503
+            status = 0
             body = {"error": {"code": "client_error", "message": str(e)}}
         duration = time.perf_counter() - start
         
@@ -95,17 +95,25 @@ async def run_scenario_hot_seat(client: BurstClient):
     results = await asyncio.gather(*tasks)
     
     status_counts = {}
-    for st, _, _ in results:
+    error_reasons = {}
+    for st, body, _ in results:
         status_counts[st] = status_counts.get(st, 0) + 1
+        if st >= 400 and isinstance(body, dict) and "error" in body:
+            reason = body["error"].get("code", "unknown")
+            error_reasons[reason] = error_reasons.get(reason, 0) + 1
         
     print(f"Status codes: {status_counts}")
+    print(f"Error reasons: {error_reasons}")
     if 429 in status_counts:
         print("Sample 429s:", [b for s, b, _ in results if s == 429][:2])
     
-    # In a real cloud environment, connection resets / 503s can happen on free tiers.
-    # We assert that there are no 500s.
+    for st in status_counts:
+        if st >= 500:
+            assert False, f"Failing run: encountered status {st} >= 500"
+            
     assert status_counts.get(201, 0) == 1, "Exactly 1 request should succeed"
     assert status_counts.get(409, 0) + status_counts.get(429, 0) == 499, "Rest should be 409 or 429"
+    assert error_reasons.get("seat_taken", 0) + status_counts.get(429, 0) == 499, "Rest should be seat_taken or 429"
     assert sum(status_counts.values()) == 500
     print("[PASS] Hot-seat storm passed")
     return results

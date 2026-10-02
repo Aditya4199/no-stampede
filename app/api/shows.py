@@ -19,6 +19,13 @@ from app.auth.jwt import get_current_admin_user, get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/shows")
 
+_reserve_semaphore: Optional[asyncio.Semaphore] = None
+
+def get_reserve_semaphore(request: Request) -> asyncio.Semaphore:
+    global _reserve_semaphore
+    if _reserve_semaphore is None:
+        _reserve_semaphore = asyncio.Semaphore(request.app.state.config.max_inflight_reserves)
+    return _reserve_semaphore
 
 class SeatItem(BaseModel):
     label: str
@@ -194,6 +201,7 @@ class ReserveResponse(BaseModel):
 
 @router.post("/{show_id}/reserve", response_model=ReserveResponse, status_code=201)
 async def reserve_seats(
+    request: Request,
     show_id: uuid.UUID,
     req: ReserveRequest,
     idempotency_key_header: Optional[str] = Header(None, alias="Idempotency-Key"),
@@ -211,49 +219,62 @@ async def reserve_seats(
     req_hash = hashlib.sha256(f"{show_id}-{','.join(sorted_seats)}".encode()).hexdigest()
     num_seats = len(sorted_seats)
 
-    for attempt in range(1, 4):
-        try:
-            async with acquire_conn() as conn:
-                async with conn.transaction():
-                    try:
-                        row = await conn.fetchrow(
-                            """
-                            INSERT INTO idempotency_keys (user_id, key, show_id, request_hash)
-                            VALUES ($1, $2, $3, $4)
-                            ON CONFLICT (user_id, key) DO NOTHING
-                            RETURNING 1
-                            """,
-                            user_id, idempotency_key, show_id, req_hash
-                        )
-                    except asyncpg.exceptions.ForeignKeyViolationError:
-                        raise DomainError("not_found", "Show not found", 404)
-                    if not row:
-                        idem = await conn.fetchrow(
-                            "SELECT request_hash, response, status_code FROM idempotency_keys WHERE user_id=$1 AND key=$2",
-                            user_id, idempotency_key
-                        )
-                        if idem["request_hash"] != req_hash:
-                            raise DomainError("idempotency_mismatch", "Idempotency key already used for a different request", 409)
-                        if idem["response"] is not None:
-                            return JSONResponse(status_code=idem["status_code"], content=json.loads(idem["response"]))
-                        else:
-                            raise DomainError("conflict", "Concurrent request processing for same idempotency key", 409)
+    sem = get_reserve_semaphore(request)
+    try:
+        async with asyncio.timeout(0.05):
+            await sem.acquire()
+    except TimeoutError:
+        return JSONResponse(
+            status_code=429,
+            content={"error": {"code": "too_many_requests", "message": "The service is currently overloaded. Please try again later."}},
+            headers={"Retry-After": "1"}
+        )
 
-                    # 2. Fast pre-check
-                    pre_check = await conn.fetch(
-                        "SELECT label, status, hold_expires_at FROM seats WHERE show_id = $1 AND label = ANY($2)",
-                        show_id, sorted_seats
-                    )
-                    if len(pre_check) != num_seats:
-                        raise DomainError("invalid_seats", "One or more seats are invalid", 400)
-                        
-                    now = datetime.now(timezone.utc)
-                    for seat in pre_check:
-                        if seat["status"] == "available":
-                            continue
-                        if seat["status"] == "held" and seat["hold_expires_at"] and seat["hold_expires_at"] < now:
-                            continue
-                        raise DomainError("seat_taken", f"Seat {seat['label']} is not available", 409)
+    try:
+        # 1. Fast pre-check on short-lived connection
+        async with acquire_conn() as conn:
+            pre_check = await conn.fetch(
+                "SELECT label, status, hold_expires_at FROM seats WHERE show_id = $1 AND label = ANY($2)",
+                show_id, sorted_seats
+            )
+            if len(pre_check) != num_seats:
+                raise DomainError("invalid_seats", "One or more seats are invalid", 400)
+                
+            now = datetime.now(timezone.utc)
+            for seat in pre_check:
+                if seat["status"] == "available":
+                    continue
+                if seat["status"] == "held" and seat["hold_expires_at"] and seat["hold_expires_at"] < now:
+                    continue
+                raise DomainError("seat_taken", f"Seat {seat['label']} is not available", 409)
+
+        for attempt in range(1, 4):
+            try:
+                async with acquire_conn() as conn:
+                    async with conn.transaction():
+                        try:
+                            row = await conn.fetchrow(
+                                """
+                                INSERT INTO idempotency_keys (user_id, key, show_id, request_hash)
+                                VALUES ($1, $2, $3, $4)
+                                ON CONFLICT (user_id, key) DO NOTHING
+                                RETURNING 1
+                                """,
+                                user_id, idempotency_key, show_id, req_hash
+                            )
+                        except asyncpg.exceptions.ForeignKeyViolationError:
+                            raise DomainError("not_found", "Show not found", 404)
+                        if not row:
+                            idem = await conn.fetchrow(
+                                "SELECT request_hash, response, status_code FROM idempotency_keys WHERE user_id=$1 AND key=$2",
+                                user_id, idempotency_key
+                            )
+                            if idem["request_hash"] != req_hash:
+                                raise DomainError("idempotency_mismatch", "Idempotency key already used for a different request", 409)
+                            if idem["response"] is not None:
+                                return JSONResponse(status_code=idem["status_code"], content=json.loads(idem["response"]))
+                            else:
+                                raise DomainError("conflict", "Concurrent request processing for same idempotency key", 409)
 
                     # 3. Fetch show config
                     show = await conn.fetchrow("SELECT price_paise, per_user_limit, hold_ttl_seconds FROM shows WHERE id=$1", show_id)
@@ -342,7 +363,9 @@ async def reserve_seats(
                     )
 
                     return ReserveResponse(**resp_dict)
-        except (asyncpg.exceptions.DeadlockDetectedError, asyncpg.exceptions.LockNotAvailableError):
-            if attempt == 3:
-                raise DomainError("seat_taken", "Seat lock timeout", 409)
-            await asyncio.sleep(random.uniform(0.1, 0.5))
+            except (asyncpg.exceptions.DeadlockDetectedError, asyncpg.exceptions.LockNotAvailableError):
+                if attempt == 3:
+                    raise DomainError("seat_taken", "Seat lock timeout", 409)
+                await asyncio.sleep(random.uniform(0.1, 0.5))
+    finally:
+        sem.release()

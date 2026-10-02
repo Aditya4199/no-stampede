@@ -9,6 +9,7 @@ class Config:
     jwt_secret: str
     db_max_conns: int
     db_pool_acquire_timeout: float
+    max_inflight_reserves: int
     admin_key: str
     env: str
 
@@ -45,6 +46,15 @@ class Config:
             db_pool_acquire_timeout = float(db_pool_acquire_timeout_raw)
         except ValueError:
             db_pool_acquire_timeout = 5.0
+            
+        max_inflight_raw = os.getenv("MAX_INFLIGHT_RESERVES")
+        if max_inflight_raw:
+            try:
+                max_inflight_reserves = int(max_inflight_raw)
+            except ValueError:
+                max_inflight_reserves = 2 * db_max_conns
+        else:
+            max_inflight_reserves = 2 * db_max_conns
 
         return cls(
             port=port,
@@ -52,6 +62,7 @@ class Config:
             jwt_secret=jwt_secret,
             db_max_conns=db_max_conns,
             db_pool_acquire_timeout=db_pool_acquire_timeout,
+            max_inflight_reserves=max_inflight_reserves,
             admin_key=os.getenv("ADMIN_KEY", ""),
             env=env,
         )
