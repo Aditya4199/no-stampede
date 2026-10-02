@@ -9,6 +9,8 @@ class Config:
     jwt_secret: str
     db_max_conns: int
     db_pool_acquire_timeout: float
+    admin_key: str
+    env: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -28,7 +30,7 @@ class Config:
         if not jwt_secret:
             if env != "dev":
                 raise RuntimeError("JWT_SECRET environment variable is required outside dev environment")
-            jwt_secret = "super-secret-jwt-key-for-dev"
+            jwt_secret = "supersecret-dev-jwt-key-must-be-at-least-32-bytes"
 
         db_max_conns_raw = os.getenv("DB_MAX_CONNS", "20")
         try:
@@ -50,4 +52,6 @@ class Config:
             jwt_secret=jwt_secret,
             db_max_conns=db_max_conns,
             db_pool_acquire_timeout=db_pool_acquire_timeout,
+            admin_key=os.getenv("ADMIN_KEY", ""),
+            env=env,
         )

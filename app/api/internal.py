@@ -13,53 +13,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/internal", dependencies=[Depends(get_current_admin_user)])
 
 
-class CreateShowRequest(BaseModel):
-    name: str = Field(..., min_length=1)
-    price_paise: int = Field(..., ge=0)
-    per_user_limit: int = Field(4, gt=0)
-    seats: List[str] = Field(..., max_length=10000)
-
-
-class CreateShowResponse(BaseModel):
-    show_id: uuid.UUID
-
-
 class ConfigureShowRequest(BaseModel):
     hold_ttl_seconds: int = Field(..., gt=0)
-
-
-@router.post("/shows", response_model=CreateShowResponse, status_code=201)
-async def create_show(req: CreateShowRequest):
-    show_id = uuid.uuid4()
-    total_seats = len(req.seats)
-    
-    async with acquire_conn() as conn:
-        async with conn.transaction():
-            # Insert show
-            await conn.execute(
-                """
-                INSERT INTO shows (id, name, price_paise, per_user_limit, total_seats)
-                VALUES ($1, $2, $3, $4, $5)
-                """,
-                show_id,
-                req.name,
-                req.price_paise,
-                req.per_user_limit,
-                total_seats,
-            )
-            
-            # Batch insert seats
-            if req.seats:
-                seat_records = [
-                    (show_id, label, "available") for label in req.seats
-                ]
-                await conn.copy_records_to_table(
-                    "seats",
-                    columns=["show_id", "label", "status"],
-                    records=seat_records,
-                )
-
-    return CreateShowResponse(show_id=show_id)
 
 
 @router.patch("/shows/{show_id}", status_code=200)
