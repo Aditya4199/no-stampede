@@ -116,11 +116,19 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def limit_upload_size(request: Request, call_next):
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > 65536:  # 64KB
-            return JSONResponse(
-                status_code=400,
-                content={"error": {"code": "invalid_request", "message": "Request body too large"}},
-            )
+        if content_length:
+            try:
+                cl = int(content_length)
+                if cl > 65536:  # 64KB
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": {"code": "invalid_request", "message": "Request body too large"}},
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": {"code": "invalid_request", "message": "Invalid Content-Length"}},
+                )
         # Also protect against chunked requests that exceed limit
         # This is a basic implementation; for full streaming protection we would need custom route class
         return await call_next(request)

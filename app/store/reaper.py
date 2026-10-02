@@ -15,9 +15,8 @@ async def reap_expired_holds():
                 
             async with pool.acquire() as conn:
                 async with conn.transaction():
-                    # Find reservations with held seats that have expired
-                    # We lock the reservation rows FOR UPDATE SKIP LOCKED to avoid blocking
-                    now = datetime.now(timezone.utc)
+                    now_row = await conn.fetchrow("SELECT NOW()")
+                    now = now_row["now"]
                     expired = await conn.fetch(
                         """
                         WITH expired_seats AS (
@@ -42,7 +41,8 @@ async def reap_expired_holds():
 
                     logger.info(f"Reaping {len(expired)} expired reservations")
 
-                    for row in expired:
+                    expired_sorted = sorted(expired, key=lambda r: str(r["reservation_id"]))
+                    for row in expired_sorted:
                         res_id = row["reservation_id"]
                         show_id = row["show_id"]
                         expired_count = row["expired_count"]
@@ -59,7 +59,7 @@ async def reap_expired_holds():
                         
                         # 2. Update reservation
                         # Find the user_id for quota update
-                        res = await conn.fetchrow("SELECT user_id FROM reservations WHERE id = $1", res_id)
+                        res = await conn.fetchrow("SELECT user_id FROM reservations WHERE id = $1 FOR UPDATE", res_id)
                         if res:
                             await conn.execute(
                                 """

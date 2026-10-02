@@ -209,11 +209,11 @@ async def reserve_seats(
 ):
     user_id = user.get("sub")
     if not user_id:
-        raise HTTPException(status_code=401, detail="Missing sub in token")
+        return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Missing sub in token"}})
         
     idempotency_key = idempotency_key_header or req.idempotency_key
     if not idempotency_key:
-        raise HTTPException(status_code=400, detail="Idempotency key is required")
+        return JSONResponse(status_code=400, content={"error": {"code": "invalid_request", "message": "Idempotency key is required"}})
 
     sorted_seats = sorted(req.seats)
     req_hash = hashlib.sha256(f"{show_id}-{','.join(sorted_seats)}".encode()).hexdigest()
@@ -233,6 +233,8 @@ async def reserve_seats(
     try:
         # 1. Fast pre-check on short-lived connection
         async with acquire_conn() as conn:
+            now_row = await conn.fetchrow("SELECT NOW()")
+            now = now_row["now"]
             pre_check = await conn.fetch(
                 "SELECT label, status, hold_expires_at FROM seats WHERE show_id = $1 AND label = ANY($2)",
                 show_id, sorted_seats
@@ -240,7 +242,6 @@ async def reserve_seats(
             if len(pre_check) != num_seats:
                 raise DomainError("invalid_seats", "One or more seats are invalid", 400)
                 
-            now = datetime.now(timezone.utc)
             for seat in pre_check:
                 if seat["status"] == "available":
                     continue
@@ -285,7 +286,7 @@ async def reserve_seats(
                     # 4. Lock seats FOR UPDATE in deterministic order
                     seats_db = await conn.fetch(
                         """
-                        SELECT label, status, hold_expires_at FROM seats 
+                        SELECT label, status, hold_expires_at, reservation_id, user_id FROM seats 
                         WHERE show_id = $1 AND label = ANY($2)
                         ORDER BY label
                         FOR UPDATE
@@ -293,10 +294,19 @@ async def reserve_seats(
                         show_id, sorted_seats
                     )
                     
+                    now_row = await conn.fetchrow("SELECT NOW()")
+                    now = now_row["now"]
+                    
+                    old_owners = {}
                     for seat in seats_db:
                         if seat["status"] == "available":
                             continue
                         if seat["status"] == "held" and seat["hold_expires_at"] and seat["hold_expires_at"] < now:
+                            old_res_id = seat["reservation_id"]
+                            if old_res_id:
+                                if old_res_id not in old_owners:
+                                    old_owners[old_res_id] = {"user_id": seat["user_id"], "count": 0}
+                                old_owners[old_res_id]["count"] += 1
                             continue
                         raise DomainError("seat_taken", f"Seat {seat['label']} is not available", 409)
 
@@ -331,6 +341,27 @@ async def reserve_seats(
                         """,
                         status, user_id, reservation_id, expires_at, show_id, sorted_seats
                     )
+                    
+                    if old_owners:
+                        for old_res_id, info in old_owners.items():
+                            await conn.execute(
+                                """
+                                UPDATE user_show_quota 
+                                SET active_count = active_count - $1
+                                WHERE user_id = $2 AND show_id = $3
+                                """,
+                                info["count"], info["user_id"], show_id
+                            )
+                            
+                            remaining = await conn.fetchval(
+                                "SELECT count(*) FROM seats WHERE reservation_id = $1",
+                                old_res_id
+                            )
+                            if remaining == 0:
+                                await conn.execute(
+                                    "UPDATE reservations SET status = 'expired' WHERE id = $1 AND status != 'cancelled'",
+                                    old_res_id
+                                )
 
                     await conn.execute(
                         """

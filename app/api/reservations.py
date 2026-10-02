@@ -18,13 +18,14 @@ class CancelResponse(BaseModel):
 async def cancel_reservation(reservation_id: uuid.UUID, user=Depends(get_current_user)):
     user_id = user.get("sub")
     if not user_id:
-        raise HTTPException(status_code=401, detail="Missing sub in token")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Missing sub in token"}})
         
     async with acquire_conn() as conn:
         async with conn.transaction():
             # Check if reservation exists and belongs to the user
             reservation = await conn.fetchrow(
-                "SELECT show_id, status FROM reservations WHERE id = $1 AND user_id = $2",
+                "SELECT show_id, status FROM reservations WHERE id = $1 AND user_id = $2 FOR UPDATE",
                 reservation_id, user_id
             )
             
@@ -37,7 +38,7 @@ async def cancel_reservation(reservation_id: uuid.UUID, user=Depends(get_current
                 return CancelResponse(status="cancelled")
                 
             if reservation["status"] == "expired":
-                raise DomainError("invalid_request", "Reservation already expired", 400)
+                raise DomainError("already_expired", "Reservation already expired", 409)
                 
             show_id = reservation["show_id"]
             
