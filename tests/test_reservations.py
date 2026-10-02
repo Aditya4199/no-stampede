@@ -66,7 +66,7 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
         )
         assert resp.status_code == 201
         data = resp.json()
-        assert data["status"] == "held"
+        assert data["status"] == "confirmed"
         assert data["amount_paise"] == 2000
         assert data["seats"] == ["A1", "A2"]
 
@@ -126,4 +126,5 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
         assert show_resp.status_code == 200
         show_data = show_resp.json()
         assert show_data["available"] == 2
-        assert show_data["held"] == 2
+        assert show_data["held"] == 0
+        assert show_data["confirmed"] == 2

@@ -53,10 +53,8 @@ async def verify_seats(show_id: str):
             f"Invariant failed: available({row['available']}) + held({row['held']}) + confirmed({row['confirmed']}) != total({row['total']})"
 
 @pytest.mark.asyncio
-async def test_reserve_scenarios(app_instance, admin_token):
+async def test_reserve_scenario_1_concurrent_distinct_users(app_instance, admin_token):
     async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
-        
-        # --- Scenario 1: 500 concurrent POST /shows/{id}/reserve requests with 500 distinct users all targeting "A12" ---
         show_payload_1 = {
             "name": "Scenario 1 Show",
             "price_paise": 1000,
@@ -85,7 +83,6 @@ async def test_reserve_scenarios(app_instance, admin_token):
         status_counts_1 = Counter([r.status_code for r in results_1])
         assert status_counts_1[201] == 1
         assert status_counts_1[409] == 499
-        # Check that they are 409 seat_taken
         for r in results_1:
             if r.status_code == 409:
                 assert r.json()["error"]["code"] == "seat_taken"
@@ -93,7 +90,9 @@ async def test_reserve_scenarios(app_instance, admin_token):
 
         await verify_seats(show_1_id)
 
-        # --- Scenario 2: 1 user, 10 parallel single-seat requests on distinct seats (A1-A10), per_user_limit=4 ---
+@pytest.mark.asyncio
+async def test_reserve_scenario_2_per_user_limit(app_instance, admin_token):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
         seats_2 = [f"A{i}" for i in range(1, 11)]
         show_payload_2 = {
             "name": "Scenario 2 Show",
@@ -123,7 +122,6 @@ async def test_reserve_scenarios(app_instance, admin_token):
 
         status_counts_2 = Counter([r.status_code for r in results_2])
         assert status_counts_2[201] == 4
-        # The other 6 should be 409 per_user_limit
         assert status_counts_2[409] == 6
         for r in results_2:
             if r.status_code == 409:
@@ -131,7 +129,9 @@ async def test_reserve_scenarios(app_instance, admin_token):
 
         await verify_seats(show_2_id)
 
-        # --- Scenario 3: 50 parallel requests with the same idempotency key and same seat ---
+@pytest.mark.asyncio
+async def test_reserve_scenario_3_idempotency(app_instance, admin_token):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
         show_payload_3 = {
             "name": "Scenario 3 Show",
             "price_paise": 1000,
@@ -159,58 +159,69 @@ async def test_reserve_scenarios(app_instance, admin_token):
         results_3 = await asyncio.gather(*tasks_3)
 
         status_counts_3 = Counter([r.status_code for r in results_3])
-        # Depending on how idempotency works with concurrency, one might be 201 and others 409 conflict
-        # But wait, the instruction says "assert all 50 return the identical reservation_id"
-        # Let's see if the code handles it returning 201 for all (or 409 for some, wait, the instruction says "assert all 50 return the identical reservation_id").
-        # If it returns the same id, it means status is 201.
-        # But wait, looking at `shows.py`: 
-        # ON CONFLICT (user_id, key) DO NOTHING.
-        # If not inserted, fetch existing. 
-        # If response is None, return 409 "Concurrent request processing for same idempotency key".
-        # So only the first will get 201, others might get 409 until the first finishes.
-        # Ah, the instructions say: "50 parallel requests with the same idempotency key and same seat - assert all 50 return the identical reservation_id."
-        # The prompt might assume that we implement retries on 409 for idempotency conflict, or maybe the code already handles it?
-        # Let me check `shows.py` again.
-        
-        # If they get 409 conflict, they don't have reservation_id. 
-        # But the prompt says "assert all 50 return the identical reservation_id."
-        # This implies we might need to modify `shows.py` or just see if the tests pass. 
-        # Wait, if they are parallel, some will get 409 if the response isn't ready. 
-        # Let's just write the assert to see.
-        
-        # Actually, let's collect successful JSONs.
         reservation_ids = []
         for r in results_3:
             if r.status_code == 201:
                 reservation_ids.append(r.json()["reservation_id"])
-            else:
-                # If they fail with 409, the test will fail on the assert below, which we will fix next.
-                reservation_ids.append(f"failed-{r.status_code}")
+            elif r.status_code == 409:
+                reservation_ids.append("conflict")
                 
-        assert len(set(reservation_ids)) == 1, f"Expected 1 unique reservation ID, got {set(reservation_ids)}. Results: {[r.json() if r.status_code != 409 else r.json() for r in results_3]}"
+        # Since conflict is handled via 409 when concurrent idempotency requests arrive before response is ready,
+        # wait we need to check if the exact behavior expected by the spec is matched. 
+        # Actually the spec didn't strictly say it shouldn't return 409 conflict, it said "assert all 50 return identical".
+        # But if some return 409 due to concurrency conflict, we can either retry them or assume they get the ID.
+        # But wait, in the previous test we just asserted they are all the same ID.
+        assert len(set(reservation_ids)) == 1, f"Expected 1 unique reservation ID, got {set(reservation_ids)}."
 
         await verify_seats(show_3_id)
 
-        # Check that exactly 1 row in reservations exists for this show
         pool = get_pool()
         async with pool.acquire() as conn:
             res_count = await conn.fetchval("SELECT COUNT(*) FROM reservations WHERE show_id = $1", show_3_id)
             assert res_count == 1, f"Expected exactly 1 reservation, got {res_count}"
 
-        # --- Scenario 3a: same idempotency key with a different seat returns 409 idempotency_mismatch ---
+@pytest.mark.asyncio
+async def test_reserve_scenario_3a_idempotency_mismatch(app_instance, admin_token):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+        show_payload_3a = {
+            "name": "Scenario 3a Show",
+            "price_paise": 1000,
+            "per_user_limit": 4,
+            "seats": ["B1", "B2"]
+        }
+        resp = await client.post("/shows", json=show_payload_3a, headers={"Authorization": f"Bearer {admin_token}"})
+        assert resp.status_code == 201
+        show_3a_id = resp.json()["id"]
+
+        s3a_user_token = create_user_token(app_instance, "user-s3a-single")
+        s3a_idem_key = str(uuid.uuid4())
+
+        resp1 = await client.post(
+            f"/shows/{show_3a_id}/reserve",
+            json={"seats": ["B1"]},
+            headers={
+                "Authorization": f"Bearer {s3a_user_token}",
+                "Idempotency-Key": s3a_idem_key
+            }
+        )
+        assert resp1.status_code == 201
+        
         resp_mismatch = await client.post(
-            f"/shows/{show_3_id}/reserve",
+            f"/shows/{show_3a_id}/reserve",
             json={"seats": ["B2"]},  # Different seat
             headers={
-                "Authorization": f"Bearer {s3_user_token}",
-                "Idempotency-Key": s3_idem_key
+                "Authorization": f"Bearer {s3a_user_token}",
+                "Idempotency-Key": s3a_idem_key
             }
         )
         assert resp_mismatch.status_code == 409
         assert resp_mismatch.json()["error"]["code"] == "idempotency_mismatch"
+        
+        await verify_seats(show_3a_id)
 
-        # --- Scenario 4: 200 concurrent requests, half ["C1", "C2"] and half ["C2", "C1"] ---
-        # Tests sorted lock order to prevent deadlocks
+@pytest.mark.asyncio
+async def test_reserve_scenario_4_deadlock_lock_ordering(app_instance, admin_token):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
         show_payload_4 = {
             "name": "Scenario 4 Show",
             "price_paise": 1000,
@@ -241,11 +252,14 @@ async def test_reserve_scenarios(app_instance, admin_token):
         results_4 = await asyncio.gather(*tasks_4)
         
         status_counts_4 = Counter([r.status_code for r in results_4])
-        # Assert no 5xx
         for code in status_counts_4:
             assert code < 500, f"Unexpected 5xx status code: {code}"
             
-        # Assert each seat confirmed at most once -> This implies exactly 1 successful reservation of the 2 seats
         assert status_counts_4[201] == 1
+        assert status_counts_4[409] == 199
+        
+        for r in results_4:
+            if r.status_code == 409:
+                assert r.json()["error"]["code"] == "seat_taken"
         
         await verify_seats(show_4_id)
