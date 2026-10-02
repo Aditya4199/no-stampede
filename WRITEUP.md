@@ -1,31 +1,45 @@
-# System Design Writeup: Seat Reservation at Scale
+# Seat Reservation at Scale - Architecture & Writeup
 
-## 1. Atomic Decisions: Single Transaction vs. SAGA
-For ticket reservation, we need absolute guarantees that a seat is not double-sold. 
-We chose a **Single Database Transaction** using PostgreSQL's row-level locking (`SELECT ... FOR UPDATE`) instead of a distributed SAGA pattern.
-- **Why?** Relational databases are exceptional at ACID compliance. By locking the specific seat rows in a deterministic order (e.g., sorting alphabetically by seat label), we avoid deadlocks and ensure that concurrent requests attempting to book the same seats will queue up at the database level.
-- **SAGA Tradeoffs**: A SAGA pattern (choreography/orchestration between services) introduces eventual consistency, meaning we might oversell and have to issue a refund/compensating transaction later. For this domain, overselling is catastrophic, making strong consistency via a single transaction the right choice.
+## The Atomic Decision
+The atomic decision of whether a user can reserve a set of seats lives strictly within the PostgreSQL database layer using a combination of **row-level locking (`SELECT ... FOR UPDATE`)** and **transactional boundaries**. 
 
-## 2. Idempotency Implementation
-Network failures happen, and clients will retry. If they retry a payment/reservation, we must not charge them twice or book another set of seats.
-- We implemented an `idempotency_keys` table.
-- Before locking seats, we attempt to `INSERT` the `(user_id, idempotency_key)` pair.
-- If it succeeds, this is the first attempt.
-- If it fails (`ON CONFLICT`), we retrieve the stored `request_hash` to ensure the user isn't changing the payload on a retry. If it matches, we simply return the previously stored response without hitting the reservation logic again.
+When a `POST /reserve` request arrives, the application starts a database transaction and executes a `SELECT ... FOR UPDATE` on the specific seats requested (ordered alphabetically to prevent deadlocks). This acquires an exclusive row lock on those seats. Inside the same transaction, the state is evaluated:
+1. If the seats are already `held` or `confirmed`, a `409 Conflict` is returned.
+2. The user's current active reservation count is locked and checked. If adding the new seats exceeds `per_user_limit`, it returns `409 Conflict`.
+3. If both conditions pass, the seats are updated to `held` (or `confirmed`) and the transaction commits, releasing the lock. 
 
-## 3. Holds & Expiry Strategy
-When a user begins checkout, seats are placed on "hold" for a limited time (e.g., 10 minutes) before they complete payment.
-- **Lazy Evaluation**: During any reservation attempt, the system checks `hold_expires_at < now`. If a seat is marked as 'held' but its expiration time has passed, the system treats it as 'available'. This prevents users from being blocked by stale holds.
-- **Active Reaper**: Relying solely on lazy evaluation leaves the database cluttered and causes metrics (e.g., available seat counts) to be inaccurate. We implemented a background worker (`reaper.py`) that periodically scans for expired holds and physically updates them back to 'available', ensuring global counts are eventually consistent and accurate.
+This is race-free because PostgreSQL's MVCC ensures that if 500 parallel transactions try to lock the exact same seat row, 1 will acquire the lock and 499 will wait. Once the 1st transaction commits and changes the state to `held`, the remaining 499 transactions wake up sequentially, read the newly committed `held` state, and gracefully abort with a `409 Conflict`.
 
-## 4. Observability and Monitoring
-We built a custom Prometheus exporter (`/metrics`).
-- **Counters**: We track `reservations_confirmed_total` and `reservations_declined_total` (tagged by `reason` like `seat_taken`, `per_user_limit`).
-- This allows us to build Grafana dashboards to monitor if the system is rejecting too many requests (indicating a possible bot attack) or if confirmed reservations suddenly drop (indicating a failure in the checkout flow). 
-- **Zero 5xx Guarantee**: By observing metrics and returning 4xx for domain errors (conflicts, limits), we can easily alert on *any* 5xx error, which represents a true system failure.
+**Avoiding Deadlocks (Multi-seat requests):** When users request multiple seats (e.g., `["B1", "A1"]`), the application always sorts the requested seat IDs lexicographically before querying `SELECT ... FOR UPDATE`. This guarantees all concurrent transactions attempt to lock rows in the exact same global order, making deadlocks mathematically impossible.
 
-## 5. CAP Theorem: CP over AP
-In the context of the CAP theorem, this system is explicitly designed as a **CP (Consistent and Partition-Tolerant)** system.
-- **Consistency**: The highest priority. We must never sell the same seat twice.
-- **Partition Tolerance**: We must handle network partitions gracefully.
-- **Availability Tradeoff**: If the primary database goes down or a partition separates the app from the DB, the system will refuse to serve reservation requests rather than risking divergent states or overbooking. In this domain, saying "Service Unavailable" is far better than saying "You got the ticket!" and later revoking it.
+## Idempotency
+Idempotency is enforced by a dedicated `idempotency_keys` table. 
+1. We store a composite unique key of `(user_id, idempotency_key)`.
+2. Before processing a reservation, we attempt an `INSERT` into this table. 
+3. If the insert succeeds, it's a new request. If it fails due to a unique constraint violation, it's a retry.
+4. For retries, we fetch the previously stored request body and response payload. If the requested seats match the original request exactly, we return the cached response (exactly-once semantics). If the seats differ, we reject it with `409 Conflict` (same-key-different-body handling).
+
+## Holds & Expiry
+We implemented a time-boxed hold mechanism. When a user reserves a seat, its status becomes `held` and an `expires_at` timestamp is set (e.g., 10 minutes in the future). 
+- A background asynchronous task (the "Reaper") continuously polls the database for expired holds.
+- The Reaper executes an atomic `UPDATE seats SET status = 'available', user_id = NULL WHERE status = 'held' AND expires_at < NOW()`.
+- Users can also explicitly release their holds via `POST /shows/{id}/reservations/{reservation_id}/cancel`.
+This ensures a released seat becomes cleanly re-bookable. A release can never resurrect a seat confirmed to someone else because a confirmed seat permanently loses its `expires_at` timestamp and transitions to the `confirmed` status, making it immune to the Reaper.
+
+## Consistency vs Availability under a Partition
+The system strictly favors **Consistency (CP in CAP theorem)**. Because a seat is a unique physical asset that can only be sold once, double-booking is catastrophic. If the application server loses connection to the database (network partition), it fails closed, returning a `503` (or `429 Too Many Requests` during extreme load-shedding) rather than attempting to serve potentially stale or overlapping reservations. The readiness endpoint `/readyz` explicitly performs a live database ping and fails if the DB is unreachable, removing the node from the load balancer.
+
+## Observability
+If paged at 2 AM for an incident, the primary signals I would rely on are the exposed Prometheus metrics:
+- `reservations_confirmed_total` vs `reservations_declined_total`: A massive spike in declines (specifically `internal_error`) indicates database connectivity or application bugs.
+- `http_requests_total{code="5xx"}`: Alerts on any server crashes.
+- Database CPU/Memory saturation and Postgres lock queue length: To detect if the database size needs scaling due to a massive stampede (we scaled to 512MB RAM on Fly to handle 2000+ burst connections gracefully).
+All API logs are strictly structured in JSON, containing `X-Request-ID` and `duration_ms`, allowing me to trace any slow request or specific user idempotency failure directly through Datadog or ELK.
+
+## AI Usage
+AI tools were used extensively as a pair-programming partner to scaffold the boilerplate FastAPI application, generate the `asyncpg` connection pool logic, and write the extensive Python test suite (`scripts/burst.py`). The core architectural decisions—such as the deterministic row-locking strategy, the 429 backoff mechanism, and the idempotency table schema—were architected directly based on the exact problem constraints, with AI executing the implementation details. 
+
+## What I'd do next
+1. **Redis Caching for Show State**: Currently, `GET /shows/{id}` hits Postgres. I'd add Redis to cache available seats, invalidating it asynchronously to relieve read-heavy load during a stampede.
+2. **Postgres Connection Bouncer**: Introduce `PgBouncer` to manage connection pooling at scale, instead of relying solely on the application's internal `asyncpg` pool limit.
+3. **Queueing System**: Introduce a Kafka/RabbitMQ queue for incoming reservations during massive spikes, converting the API from a synchronous lock model to an asynchronous worker model to protect the DB from lock exhaustion entirely.
