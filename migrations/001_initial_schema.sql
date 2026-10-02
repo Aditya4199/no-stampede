@@ -1,7 +1,4 @@
-CREATE TABLE schema_migrations (
-    version INT PRIMARY KEY,
-    applied_at TIMESTAMPTZ DEFAULT now()
-);
+
 
 CREATE TABLE shows (
     id UUID PRIMARY KEY,
@@ -21,7 +18,7 @@ CREATE TABLE seats (
     reservation_id UUID NULL,
     hold_expires_at TIMESTAMPTZ NULL,
     PRIMARY KEY (show_id, label),
-    CONSTRAINT seats_status_check CHECK (
+    CONSTRAINT seats_consistency_check CHECK (
         (status = 'available' AND user_id IS NULL AND reservation_id IS NULL) OR
         (status IN ('held', 'confirmed') AND user_id IS NOT NULL AND reservation_id IS NOT NULL)
     )
