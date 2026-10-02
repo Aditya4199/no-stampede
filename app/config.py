@@ -8,6 +8,7 @@ class Config:
     database_url: str
     jwt_secret: str
     db_max_conns: int
+    db_pool_acquire_timeout: float
 
     @classmethod
     def load(cls) -> "Config":
@@ -19,9 +20,15 @@ class Config:
 
         database_url = os.getenv(
             "DATABASE_URL",
-            "postgresql://postgres:postgres@localhost:5432/bms",
+            "postgresql://postgres:password@localhost:5432/no_stampede",
         )
-        jwt_secret = os.getenv("JWT_SECRET", "super-secret-jwt-key-for-dev")
+        
+        env = os.getenv("ENV", "dev")
+        jwt_secret = os.getenv("JWT_SECRET")
+        if not jwt_secret:
+            if env != "dev":
+                raise RuntimeError("JWT_SECRET environment variable is required outside dev environment")
+            jwt_secret = "super-secret-jwt-key-for-dev"
 
         db_max_conns_raw = os.getenv("DB_MAX_CONNS", "20")
         try:
@@ -30,10 +37,17 @@ class Config:
                 db_max_conns = 20
         except ValueError:
             db_max_conns = 20
+            
+        db_pool_acquire_timeout_raw = os.getenv("DB_POOL_ACQUIRE_TIMEOUT", "5.0")
+        try:
+            db_pool_acquire_timeout = float(db_pool_acquire_timeout_raw)
+        except ValueError:
+            db_pool_acquire_timeout = 5.0
 
         return cls(
             port=port,
             database_url=database_url,
             jwt_secret=jwt_secret,
             db_max_conns=db_max_conns,
+            db_pool_acquire_timeout=db_pool_acquire_timeout,
         )

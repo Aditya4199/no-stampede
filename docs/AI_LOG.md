@@ -21,3 +21,16 @@ This document records the human-AI collaborative decisions, generated components
     1. Reset Git commit history cleanly so Phase 1 starts directly with the Python service.
     2. Use FastAPI + `asyncpg` for maximum async performance with plain SQL and zero ORM overhead.
     3. Adopt `active_count` (or `seat_count`) for the `user_show_quota` table to cleanly account for all active seats (held + confirmed) against `per_user_limit`.
+
+### Phase 2 — Schema Migrations & Application Lifecycle
+- Implemented robust migration runner using `pg_advisory_lock`.
+- Added application lifecycle hooks for DB pooling and migrations.
+- Built `/readyz` endpoint.
+
+### Phase 3 — Internal API - Create Show
+- Added `POST /internal/shows` endpoint.
+- Implemented bulk insert for seat generation in a single transaction.
+
+### Phase 4 — Internal API - Show Configuration
+- Added `POST /internal/shows/{show_id}` endpoint.
+- Updated `hold_ttl_seconds` setting for a show.

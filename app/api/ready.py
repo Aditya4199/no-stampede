@@ -5,7 +5,7 @@ import asyncpg
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.store.db import get_pool
+from app.store.db import acquire_conn
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -19,10 +19,9 @@ async def readyz():
     Returns 503 if the database is down or overloaded.
     """
     try:
-        pool = get_pool()
         # Acquire a connection and execute SELECT 1 with a strict timeout
         async def _check():
-            async with pool.acquire() as conn:
+            async with acquire_conn() as conn:
                 await conn.execute("SELECT 1")
         await asyncio.wait_for(_check(), timeout=1.0)
         return JSONResponse(status_code=200, content={"status": "ready", "db": "ok"})
@@ -36,7 +35,7 @@ async def readyz():
         logger.error(f"Readiness check database error: {e}")
         return JSONResponse(
             status_code=503,
-            content={"status": "not ready", "error": str(e)},
+            content={"status": "not ready", "error": "db error"},
         )
     except Exception as e:
         logger.error(f"Readiness check unexpected error: {e}", exc_info=True)

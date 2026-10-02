@@ -3,7 +3,7 @@ import os
 
 import asyncpg
 
-from app.store.db import get_pool
+from app.store.db import acquire_conn
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +21,7 @@ async def run_migrations(migrations_dir: str = "migrations") -> None:
         logger.info("No migration files found.")
         return
 
-    pool = get_pool()
-    async with pool.acquire() as conn:
+    async with acquire_conn() as conn:
         # Advisory lock to prevent concurrent migrations
         # 42 is an arbitrary key for the lock
         logger.info("Acquiring migration advisory lock")

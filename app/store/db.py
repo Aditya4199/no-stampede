@@ -9,14 +9,16 @@ logger = logging.getLogger(__name__)
 
 # Global connection pool
 _pool: Optional[asyncpg.Pool] = None
+_config: Optional[Config] = None
 
 
 async def init_db(config: Config) -> None:
     """Initialize the global asyncpg connection pool."""
-    global _pool
+    global _pool, _config
     if _pool is not None:
         return
 
+    _config = config
     logger.info("Initializing database connection pool")
     try:
         _pool = await asyncpg.create_pool(
@@ -37,11 +39,12 @@ async def init_db(config: Config) -> None:
 
 async def close_db() -> None:
     """Close the global database connection pool."""
-    global _pool
+    global _pool, _config
     if _pool is not None:
         logger.info("Closing database connection pool")
         await _pool.close()
         _pool = None
+        _config = None
         logger.info("Database connection pool closed")
 
 
@@ -50,3 +53,10 @@ def get_pool() -> asyncpg.Pool:
     if _pool is None:
         raise RuntimeError("Database pool is not initialized")
     return _pool
+
+
+def acquire_conn():
+    """Acquire a connection from the pool with the configured timeout."""
+    if _pool is None or _config is None:
+        raise RuntimeError("Database pool is not initialized")
+    return _pool.acquire(timeout=_config.db_pool_acquire_timeout)

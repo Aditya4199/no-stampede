@@ -1,10 +1,10 @@
 .PHONY: run test lint check
 
-PYTHON ?= .venv/Scripts/python.exe
-PYTEST ?= .venv/Scripts/pytest.exe
+PYTHON ?= python
+PYTEST ?= pytest
 
 run:
-	$(PYTHON) -m app.main
+	$(PYTHON) -m uvicorn app.main:create_app --factory --reload
 
 test:
 	$(PYTEST) -v

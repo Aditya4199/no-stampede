@@ -19,8 +19,9 @@ CREATE TABLE seats (
     hold_expires_at TIMESTAMPTZ NULL,
     PRIMARY KEY (show_id, label),
     CONSTRAINT seats_consistency_check CHECK (
-        (status = 'available' AND user_id IS NULL AND reservation_id IS NULL) OR
-        (status IN ('held', 'confirmed') AND user_id IS NOT NULL AND reservation_id IS NOT NULL)
+        (status = 'available' AND user_id IS NULL AND reservation_id IS NULL AND hold_expires_at IS NULL) OR
+        (status = 'held' AND user_id IS NOT NULL AND reservation_id IS NOT NULL AND hold_expires_at IS NOT NULL) OR
+        (status = 'confirmed' AND user_id IS NOT NULL AND reservation_id IS NOT NULL)
     )
 );
 
@@ -30,7 +31,7 @@ CREATE TABLE reservations (
     user_id TEXT NOT NULL,
     seats TEXT[] NOT NULL,
     amount_paise BIGINT NOT NULL CHECK (amount_paise >= 0),
-    status TEXT NOT NULL CHECK (status IN ('confirmed', 'cancelled', 'expired')),
+    status TEXT NOT NULL CHECK (status IN ('held', 'confirmed', 'cancelled', 'expired')),
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -51,3 +52,6 @@ CREATE TABLE user_show_quota (
     active_count INT NOT NULL DEFAULT 0 CHECK (active_count >= 0),
     PRIMARY KEY (user_id, show_id)
 );
+
+CREATE INDEX idx_seats_reservation_id ON seats(reservation_id);
+CREATE INDEX idx_reservations_user_id ON reservations(user_id);
