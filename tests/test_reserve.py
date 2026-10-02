@@ -52,6 +52,10 @@ async def verify_seats(show_id: str):
         assert row["available"] + row["held"] + row["confirmed"] == row["total"], \
             f"Invariant failed: available({row['available']}) + held({row['held']}) + confirmed({row['confirmed']}) != total({row['total']})"
 
+        quota_sum = await conn.fetchval("SELECT COALESCE(SUM(active_count), 0) FROM user_show_quota WHERE show_id = $1", uuid.UUID(show_id))
+        assert quota_sum == row["held"] + row["confirmed"], \
+            f"Quota invariant failed: sum({quota_sum}) != held({row['held']}) + confirmed({row['confirmed']})"
+
 @pytest.mark.asyncio
 async def test_reserve_scenario_1_concurrent_distinct_users(app_instance, admin_token):
     async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
@@ -159,18 +163,8 @@ async def test_reserve_scenario_3_idempotency(app_instance, admin_token):
         results_3 = await asyncio.gather(*tasks_3)
 
         status_counts_3 = Counter([r.status_code for r in results_3])
-        reservation_ids = []
-        for r in results_3:
-            if r.status_code == 201:
-                reservation_ids.append(r.json()["reservation_id"])
-            elif r.status_code == 409:
-                reservation_ids.append("conflict")
-                
-        # Since conflict is handled via 409 when concurrent idempotency requests arrive before response is ready,
-        # wait we need to check if the exact behavior expected by the spec is matched. 
-        # Actually the spec didn't strictly say it shouldn't return 409 conflict, it said "assert all 50 return identical".
-        # But if some return 409 due to concurrency conflict, we can either retry them or assume they get the ID.
-        # But wait, in the previous test we just asserted they are all the same ID.
+        assert status_counts_3[201] == 50
+        reservation_ids = [r.json()["reservation_id"] for r in results_3 if r.status_code == 201]
         assert len(set(reservation_ids)) == 1, f"Expected 1 unique reservation ID, got {set(reservation_ids)}."
 
         await verify_seats(show_3_id)
@@ -263,3 +257,178 @@ async def test_reserve_scenario_4_deadlock_lock_ordering(app_instance, admin_tok
                 assert r.json()["error"]["code"] == "seat_taken"
         
         await verify_seats(show_4_id)
+
+@pytest.mark.asyncio
+async def test_reserve_scenario_5_concurrent_cancels(app_instance, admin_token):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+        show_payload = {
+            "name": "Scenario 5 Show",
+            "price_paise": 1000,
+            "per_user_limit": 4,
+            "seats": ["D1"]
+        }
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        assert resp.status_code == 201
+        show_id = resp.json()["id"]
+
+        user_token = create_user_token(app_instance, "user-s5")
+        
+        # Reserve seat
+        resp = await client.post(
+            f"/shows/{show_id}/reserve",
+            json={"seats": ["D1"]},
+            headers={"Authorization": f"Bearer {user_token}"}
+        )
+        assert resp.status_code == 201
+        reservation_id = resp.json()["reservation_id"]
+        
+        # 20 parallel cancels
+        async def cancel_res():
+            return await client.post(
+                f"/reservations/{reservation_id}/cancel",
+                headers={"Authorization": f"Bearer {user_token}"}
+            )
+            
+        tasks = [cancel_res() for _ in range(20)]
+        results = await asyncio.gather(*tasks)
+        
+        for r in results:
+            assert r.status_code == 200
+            
+        await verify_seats(show_id)
+
+@pytest.mark.asyncio
+async def test_reserve_scenario_6_cancel_vs_reserve_race(app_instance, admin_token):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+        show_payload = {
+            "name": "Scenario 6 Show",
+            "price_paise": 1000,
+            "per_user_limit": 4,
+            "seats": ["E1"]
+        }
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        show_id = resp.json()["id"]
+
+        user_a_token = create_user_token(app_instance, "user-s6-A")
+        
+        # User A reserves
+        resp = await client.post(
+            f"/shows/{show_id}/reserve",
+            json={"seats": ["E1"]},
+            headers={"Authorization": f"Bearer {user_a_token}"}
+        )
+        assert resp.status_code == 201
+        reservation_id = resp.json()["reservation_id"]
+        
+        async def cancel_res():
+            return await client.post(
+                f"/reservations/{reservation_id}/cancel",
+                headers={"Authorization": f"Bearer {user_a_token}"}
+            )
+
+        async def reserve_s6(idx):
+            token = create_user_token(app_instance, f"user-s6-{idx}")
+            return await client.post(
+                f"/shows/{show_id}/reserve",
+                json={"seats": ["E1"]},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+
+        tasks = [cancel_res()] + [reserve_s6(i) for i in range(50)]
+        results = await asyncio.gather(*tasks)
+        
+        for r in results:
+            assert r.status_code < 500, f"Unexpected 5xx: {r.status_code}"
+            
+        # Exactly 1 new owner or no owner (if reserve didn't get it after cancel)
+        # Actually exactly 1 new owner since we have 50 trying
+        status_counts = Counter([r.status_code for r in results[1:]])
+        assert status_counts[201] == 1
+        assert status_counts[409] == 49
+        
+        await verify_seats(show_id)
+
+@pytest.mark.asyncio
+async def test_reserve_scenario_7_expired_hold_takeover(app_instance, admin_token):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+        show_payload = {
+            "name": "Scenario 7 Show",
+            "price_paise": 1000,
+            "per_user_limit": 4,
+            "hold_ttl_seconds": 1,
+            "seats": ["F1"]
+        }
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        show_id = resp.json()["id"]
+
+        user_a_token = create_user_token(app_instance, "user-s7-A")
+        user_b_token = create_user_token(app_instance, "user-s7-B")
+        
+        resp_a = await client.post(
+            f"/shows/{show_id}/reserve",
+            json={"seats": ["F1"]},
+            headers={"Authorization": f"Bearer {user_a_token}"}
+        )
+        assert resp_a.status_code == 201
+        res_a_id = resp_a.json()["reservation_id"]
+        
+        await asyncio.sleep(1.5)
+        
+        resp_b = await client.post(
+            f"/shows/{show_id}/reserve",
+            json={"seats": ["F1"]},
+            headers={"Authorization": f"Bearer {user_b_token}"}
+        )
+        assert resp_b.status_code == 201
+        
+        await verify_seats(show_id)
+        
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            status_a = await conn.fetchval("SELECT status FROM reservations WHERE id = $1", uuid.UUID(res_a_id))
+            assert status_a == "expired"
+            
+            quota_a = await conn.fetchval("SELECT active_count FROM user_show_quota WHERE user_id = 'user-s7-A' AND show_id = $1", uuid.UUID(show_id))
+            assert quota_a == 0
+
+@pytest.mark.asyncio
+async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
+    # Temporarily set max_inflight_reserves to 1
+    old_limit = app_instance.state.config.max_inflight_reserves
+    app_instance.state.config.max_inflight_reserves = 1
+    
+    # Reset the semaphore
+    import app.api.shows as shows_api
+    shows_api._reserve_semaphore = None
+
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+        show_payload = {
+            "name": "Scenario 8 Show",
+            "price_paise": 1000,
+            "per_user_limit": 4,
+            "seats": ["G1", "G2"]
+        }
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        show_id = resp.json()["id"]
+
+        async def reserve_s8(idx):
+            token = create_user_token(app_instance, f"user-s8-{idx}")
+            return await client.post(
+                f"/shows/{show_id}/reserve",
+                json={"seats": ["G1"]},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+
+        tasks = [reserve_s8(i) for i in range(100)]
+        results = await asyncio.gather(*tasks)
+        
+        status_counts = Counter([r.status_code for r in results])
+        for code in status_counts:
+            assert code < 500, f"Unexpected 5xx: {code}"
+            
+        assert status_counts[429] > 0, "Expected some 429 Too Many Requests"
+        
+        await verify_seats(show_id)
+        
+    app_instance.state.config.max_inflight_reserves = old_limit
+    shows_api._reserve_semaphore = None
