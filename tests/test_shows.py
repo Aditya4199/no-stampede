@@ -7,6 +7,8 @@ from app.main import create_app
 from app.config import Config
 from app.store.db import init_db, close_db
 
+from app.store.migrations import run_migrations
+
 @pytest.fixture(scope="module")
 def app_instance():
     return create_app()
@@ -23,6 +25,7 @@ async def setup_db(app_instance):
         pytest.skip("DATABASE_URL not set")
     cfg = app_instance.state.config
     await init_db(cfg)
+    await run_migrations()
     yield
     await close_db()
 
