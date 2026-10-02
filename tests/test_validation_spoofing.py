@@ -80,8 +80,8 @@ async def test_spoof_and_validation(app_instance):
         )
         assert resp_unknown_seat.status_code == 400
 
-        # 5. Oversized body
-        huge_payload = {"seats": ["A2"], "padding": "x" * 70000} # > 64KB
+        # 5. Oversized body (limit is 1MB; use >1MB padding)
+        huge_payload = {"seats": ["A2"], "padding": "x" * 1_100_000}  # ~1.1MB
         resp_oversized = await client.post(
             f"/shows/{show_id}/reserve",
             json=huge_payload,
