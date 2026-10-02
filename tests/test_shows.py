@@ -9,11 +9,11 @@ from app.store.db import init_db, close_db
 
 from app.store.migrations import run_migrations
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def app_instance():
     return create_app()
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def admin_token(app_instance):
     cfg = app_instance.state.config
     payload = {"role": "admin", "user_id": "test-admin"}

@@ -209,8 +209,6 @@ async def reserve_seats(
         return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Missing sub in token"}})
         
     idempotency_key = idempotency_key_header or req.idempotency_key
-    if not idempotency_key:
-        return JSONResponse(status_code=400, content={"error": {"code": "invalid_request", "message": "Idempotency key is required"}})
 
     sorted_seats = sorted(req.seats)
     req_hash = hashlib.sha256(f"{show_id}-{','.join(sorted_seats)}".encode()).hexdigest()
@@ -218,9 +216,8 @@ async def reserve_seats(
 
     sem = await get_reserve_semaphore(request)
     try:
-        async with asyncio.timeout(0.05):
-            await sem.acquire()
-    except TimeoutError:
+        await asyncio.wait_for(sem.acquire(), timeout=0.05)
+    except (asyncio.TimeoutError, TimeoutError):
         return JSONResponse(
             status_code=429,
             content={"error": {"code": "too_many_requests", "message": "The service is currently overloaded. Please try again later."}},
@@ -228,163 +225,157 @@ async def reserve_seats(
         )
 
     try:
-        # 1. Fast pre-check on short-lived connection
-        async with acquire_conn() as conn:
-            now_row = await conn.fetchrow("SELECT NOW()")
-            now = now_row["now"]
-            pre_check = await conn.fetch(
-                "SELECT label, status, hold_expires_at FROM seats WHERE show_id = $1 AND label = ANY($2)",
-                show_id, sorted_seats
-            )
-            if len(pre_check) != num_seats:
-                raise DomainError("invalid_seats", "One or more seats are invalid", 400)
-                
-            for seat in pre_check:
-                if seat["status"] == "available":
-                    continue
-                if seat["status"] == "held" and seat["hold_expires_at"] and seat["hold_expires_at"] < now:
-                    continue
-                raise DomainError("seat_taken", f"Seat {seat['label']} is not available", 409)
-
         for attempt in range(1, 4):
             try:
                 async with acquire_conn() as conn:
                     async with conn.transaction():
-                        try:
-                            row = await conn.fetchrow(
-                                """
-                                INSERT INTO idempotency_keys (user_id, key, show_id, request_hash)
-                                VALUES ($1, $2, $3, $4)
-                                ON CONFLICT (user_id, key) DO NOTHING
-                                RETURNING 1
-                                """,
-                                user_id, idempotency_key, show_id, req_hash
-                            )
-                        except asyncpg.exceptions.ForeignKeyViolationError:
-                            raise DomainError("not_found", "Show not found", 404)
-                        if not row:
-                            idem = await conn.fetchrow(
-                                "SELECT request_hash, response, status_code FROM idempotency_keys WHERE user_id=$1 AND key=$2",
-                                user_id, idempotency_key
-                            )
-                            if idem["request_hash"] != req_hash:
-                                raise DomainError("idempotency_mismatch", "Idempotency key already used for a different request", 409)
-                            if idem["response"] is not None:
-                                return JSONResponse(status_code=idem["status_code"], content=json.loads(idem["response"]))
+                        if idempotency_key:
+                            for idem_attempt in range(3):
+                                try:
+                                    row = await conn.fetchrow(
+                                        """
+                                        INSERT INTO idempotency_keys (user_id, key, show_id, request_hash)
+                                        VALUES ($1, $2, $3, $4)
+                                        ON CONFLICT (user_id, key) DO NOTHING
+                                        RETURNING 1
+                                        """,
+                                        user_id, idempotency_key, show_id, req_hash
+                                    )
+                                except asyncpg.exceptions.ForeignKeyViolationError:
+                                    raise DomainError("not_found", "Show not found", 404)
+                                    
+                                if not row:
+                                    idem = await conn.fetchrow(
+                                        "SELECT request_hash, response, status_code FROM idempotency_keys WHERE user_id=$1 AND key=$2 FOR UPDATE",
+                                        user_id, idempotency_key
+                                    )
+                                    if not idem:
+                                        continue
+                                    if idem["request_hash"] != req_hash:
+                                        raise DomainError("idempotency_mismatch", "Idempotency key already used for a different request", 409)
+                                    if idem["response"] is not None:
+                                        return JSONResponse(status_code=idem["status_code"], content=json.loads(idem["response"]))
+                                    else:
+                                        raise DomainError("conflict", "Concurrent request processing for same idempotency key failed", 409)
+                                break
                             else:
-                                raise DomainError("conflict", "Concurrent request processing for same idempotency key", 409)
+                                raise DomainError("conflict", "Could not acquire idempotency key", 409)
 
-                    # 3. Fetch show config
-                    show = await conn.fetchrow("SELECT price_paise, per_user_limit, hold_ttl_seconds FROM shows WHERE id=$1", show_id)
-                    if not show:
-                        raise DomainError("not_found", "Show not found", 404)
-                    amount_paise = show["price_paise"] * num_seats
+                        # 3. Fetch show config
+                        show = await conn.fetchrow("SELECT price_paise, per_user_limit, hold_ttl_seconds FROM shows WHERE id=$1", show_id)
+                        if not show:
+                            raise DomainError("not_found", "Show not found", 404)
+                        amount_paise = show["price_paise"] * num_seats
 
-                    # 4. Lock seats FOR UPDATE in deterministic order
-                    seats_db = await conn.fetch(
-                        """
-                        SELECT label, status, hold_expires_at, reservation_id, user_id FROM seats 
-                        WHERE show_id = $1 AND label = ANY($2)
-                        ORDER BY label
-                        FOR UPDATE
-                        """,
-                        show_id, sorted_seats
-                    )
-                    
-                    now_row = await conn.fetchrow("SELECT NOW()")
-                    now = now_row["now"]
-                    
-                    old_owners = {}
-                    for seat in seats_db:
-                        if seat["status"] == "available":
-                            continue
-                        if seat["status"] == "held" and seat["hold_expires_at"] and seat["hold_expires_at"] < now:
-                            old_res_id = seat["reservation_id"]
-                            if old_res_id:
-                                if old_res_id not in old_owners:
-                                    old_owners[old_res_id] = {"user_id": seat["user_id"], "count": 0}
-                                old_owners[old_res_id]["count"] += 1
-                            continue
-                        raise DomainError("seat_taken", f"Seat {seat['label']} is not available", 409)
-
-                    # 5. User quota check
-                    quota = await conn.fetchrow(
-                        """
-                        INSERT INTO user_show_quota (user_id, show_id, active_count)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (user_id, show_id) DO UPDATE SET active_count = user_show_quota.active_count + $3
-                        RETURNING active_count
-                        """,
-                        user_id, show_id, num_seats
-                    )
-                    if quota["active_count"] > show["per_user_limit"]:
-                        raise DomainError("per_user_limit", f"Cannot reserve more than {show['per_user_limit']} seats", 409)
-
-                    # 6. Reserve seats
-                    reservation_id = uuid.uuid4()
-                    if show["hold_ttl_seconds"]:
-                        status = "held"
-                        ttl = show["hold_ttl_seconds"]
-                        expires_at = now + timedelta(seconds=ttl)
-                    else:
-                        status = "confirmed"
-                        expires_at = None
-
-                    await conn.execute(
-                        """
-                        UPDATE seats
-                        SET status = $1, user_id = $2, reservation_id = $3, hold_expires_at = $4
-                        WHERE show_id = $5 AND label = ANY($6)
-                        """,
-                        status, user_id, reservation_id, expires_at, show_id, sorted_seats
-                    )
-                    
-                    if old_owners:
-                        for old_res_id, info in old_owners.items():
-                            await conn.execute(
-                                """
-                                UPDATE user_show_quota 
-                                SET active_count = active_count - $1
-                                WHERE user_id = $2 AND show_id = $3
-                                """,
-                                info["count"], info["user_id"], show_id
-                            )
+                        # 4. Lock seats FOR UPDATE in deterministic order
+                        seats_db = await conn.fetch(
+                            """
+                            SELECT label, status, hold_expires_at, reservation_id, user_id FROM seats 
+                            WHERE show_id = $1 AND label = ANY($2)
+                            ORDER BY label
+                            FOR UPDATE
+                            """,
+                            show_id, sorted_seats
+                        )
+                        
+                        if len(seats_db) != num_seats:
+                            raise DomainError("invalid_seats", "One or more seats are invalid", 400)
                             
-                            remaining = await conn.fetchval(
-                                "SELECT count(*) FROM seats WHERE reservation_id = $1",
-                                old_res_id
-                            )
-                            if remaining == 0:
+                        now_row = await conn.fetchrow("SELECT NOW()")
+                        now = now_row["now"]
+                        
+                        old_owners = {}
+                        for seat in seats_db:
+                            if seat["status"] == "available":
+                                continue
+                            if seat["status"] == "held" and seat["hold_expires_at"] and seat["hold_expires_at"] < now:
+                                old_res_id = seat["reservation_id"]
+                                if old_res_id:
+                                    if old_res_id not in old_owners:
+                                        old_owners[old_res_id] = {"user_id": seat["user_id"], "count": 0}
+                                    old_owners[old_res_id]["count"] += 1
+                                continue
+                            raise DomainError("seat_taken", f"Seat {seat['label']} is not available", 409)
+
+                        # 5. User quota check
+                        quota = await conn.fetchrow(
+                            """
+                            INSERT INTO user_show_quota (user_id, show_id, active_count)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (user_id, show_id) DO UPDATE SET active_count = user_show_quota.active_count + $3
+                            RETURNING active_count
+                            """,
+                            user_id, show_id, num_seats
+                        )
+                        if quota["active_count"] > show["per_user_limit"]:
+                            raise DomainError("per_user_limit", f"Cannot reserve more than {show['per_user_limit']} seats", 409)
+
+                        # 6. Reserve seats
+                        reservation_id = uuid.uuid4()
+                        if show["hold_ttl_seconds"]:
+                            status = "held"
+                            ttl = show["hold_ttl_seconds"]
+                            expires_at = now + timedelta(seconds=ttl)
+                        else:
+                            status = "confirmed"
+                            expires_at = None
+
+                        await conn.execute(
+                            """
+                            UPDATE seats
+                            SET status = $1, user_id = $2, reservation_id = $3, hold_expires_at = $4
+                            WHERE show_id = $5 AND label = ANY($6)
+                            """,
+                            status, user_id, reservation_id, expires_at, show_id, sorted_seats
+                        )
+                        
+                        if old_owners:
+                            for old_res_id, info in old_owners.items():
                                 await conn.execute(
-                                    "UPDATE reservations SET status = 'expired' WHERE id = $1 AND status != 'cancelled'",
+                                    """
+                                    UPDATE user_show_quota 
+                                    SET active_count = active_count - $1
+                                    WHERE user_id = $2 AND show_id = $3
+                                    """,
+                                    info["count"], info["user_id"], show_id
+                                )
+                                
+                                remaining = await conn.fetchval(
+                                    "SELECT count(*) FROM seats WHERE reservation_id = $1",
                                     old_res_id
                                 )
+                                if remaining == 0:
+                                    await conn.execute(
+                                        "UPDATE reservations SET status = 'expired' WHERE id = $1 AND status != 'cancelled'",
+                                        old_res_id
+                                    )
 
-                    await conn.execute(
-                        """
-                        INSERT INTO reservations (id, show_id, user_id, seats, amount_paise, status)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        """,
-                        reservation_id, show_id, user_id, sorted_seats, amount_paise, status
-                    )
+                        await conn.execute(
+                            """
+                            INSERT INTO reservations (id, show_id, user_id, seats, amount_paise, status)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            """,
+                            reservation_id, show_id, user_id, sorted_seats, amount_paise, status
+                        )
 
-                    resp_dict = {
-                        "reservation_id": str(reservation_id),
-                        "show_id": str(show_id),
-                        "user_id": user_id,
-                        "status": status,
-                        "amount_paise": amount_paise,
-                        "seats": sorted_seats
-                    }
-                    
-                    await conn.execute(
-                        """
-                        UPDATE idempotency_keys
-                        SET response = $1, status_code = 201
-                        WHERE user_id = $2 AND key = $3
-                        """,
-                        json.dumps(resp_dict), user_id, idempotency_key
-                    )
+                        resp_dict = {
+                            "reservation_id": str(reservation_id),
+                            "show_id": str(show_id),
+                            "user_id": user_id,
+                            "status": status,
+                            "amount_paise": amount_paise,
+                            "seats": sorted_seats
+                        }
+                        
+                        if idempotency_key:
+                            await conn.execute(
+                                """
+                                UPDATE idempotency_keys
+                                SET response = $1, status_code = 201
+                                WHERE user_id = $2 AND key = $3
+                                """,
+                                json.dumps(resp_dict), user_id, idempotency_key
+                            )
 
                 from app.metrics.collector import reservations_confirmed_total, reservations_held_total
                 if status == "confirmed":

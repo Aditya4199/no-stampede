@@ -9,7 +9,7 @@ from app.main import create_app
 from app.store.db import init_db, close_db, get_pool
 from app.store.migrations import run_migrations
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def app_instance():
     return create_app()
 

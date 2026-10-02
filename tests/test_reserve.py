@@ -1,5 +1,6 @@
 import asyncio
 import os
+os.environ["MAX_INFLIGHT_RESERVES"] = "2000"
 import uuid
 from collections import Counter
 import pytest
@@ -9,11 +10,11 @@ import jwt
 from app.main import create_app
 from app.store.db import init_db, close_db, get_pool
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def app_instance():
     return create_app()
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def admin_token(app_instance):
     cfg = app_instance.state.config
     payload = {"role": "admin", "user_id": "test-admin"}
@@ -24,9 +25,12 @@ async def setup_db(app_instance):
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL not set")
     
-    # Close existing pool before each test
-    await close_db()
-    
+    # Ensure pool is closed before starting
+    try:
+        await close_db()
+    except Exception:
+        pass
+        
     cfg = app_instance.state.config
     await init_db(cfg)
     from app.store.migrations import run_migrations
@@ -167,6 +171,16 @@ async def test_reserve_scenario_3_idempotency(app_instance, admin_token):
         results_3 = await asyncio.gather(*tasks_3)
 
         status_counts_3 = Counter([r.status_code for r in results_3])
+        for r in results_3:
+            if r.status_code == 400:
+                print(f"\\nSCENARIO 3 GOT 400: {r.json()}")
+                
+        assert status_counts_3[400] == 0, "Got unexpected 400 Bad Request"
+        
+        for r in results_3:
+            if r.status_code == 409:
+                print(f"\\nSCENARIO 3 GOT 409: {r.json()}")
+                
         assert status_counts_3[201] == 50
         reservation_ids = [r.json()["reservation_id"] for r in results_3 if r.status_code == 201]
         assert len(set(reservation_ids)) == 1, f"Expected 1 unique reservation ID, got {set(reservation_ids)}."

@@ -4,9 +4,10 @@ import pytest
 
 os.environ.setdefault("ENV", "dev")
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="function")
 def event_loop():
-    """Create an instance of the default event loop for each test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
+    """Create a fresh event loop for each test function."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     yield loop
     loop.close()

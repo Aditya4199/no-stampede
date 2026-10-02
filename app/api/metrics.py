@@ -17,7 +17,7 @@ async def metrics():
         # Update seat gauges from DB
         import asyncio
         try:
-            async with asyncio.timeout(1.0):
+            async def fetch_metrics():
                 async with pool.acquire() as conn:
                     rows = await conn.fetch(
                         """
@@ -34,6 +34,8 @@ async def metrics():
                         seats_available.labels(show_id=show_id_str).set(row["available"] or 0)
                         seats_held.labels(show_id=show_id_str).set(row["held"] or 0)
                         seats_confirmed.labels(show_id=show_id_str).set(row["confirmed"] or 0)
+            
+            await asyncio.wait_for(fetch_metrics(), timeout=1.0)
         except (TimeoutError, asyncio.TimeoutError):
             pass
 

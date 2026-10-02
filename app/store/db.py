@@ -18,22 +18,16 @@ async def init_db(config: Config) -> None:
     """Initialize the global asyncpg connection pool."""
     global _pool, _config
     if _pool is not None:
-        return
+        await close_db()
 
     _config = config
     logger.info("Initializing database connection pool")
     try:
         _pool = await asyncpg.create_pool(
-            dsn=config.database_url,
-            min_size=10,
+            config.database_url,
+            min_size=5,
             max_size=20,
-            max_queries=50000,
-            max_inactive_connection_lifetime=300.0,
-            server_settings={
-                "statement_timeout": "5000",
-                "lock_timeout": "3000",
-                "timezone": "UTC",
-            },
+            command_timeout=30.0,
         )
         logger.info("Database connection pool initialized")
     except Exception as e:
