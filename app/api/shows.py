@@ -380,10 +380,6 @@ async def reserve_seats(
                         "seats": sorted_seats
                     }
                     
-                    # Metrics
-                    from app.metrics.collector import reservations_confirmed_total
-                    reservations_confirmed_total.labels(show_id=str(show_id)).inc()
-                    
                     await conn.execute(
                         """
                         UPDATE idempotency_keys
@@ -393,7 +389,13 @@ async def reserve_seats(
                         json.dumps(resp_dict), user_id, idempotency_key
                     )
 
-                    return ReserveResponse(**resp_dict)
+                from app.metrics.collector import reservations_confirmed_total, reservations_held_total
+                if status == "confirmed":
+                    reservations_confirmed_total.labels(show_id=str(show_id)).inc()
+                else:
+                    reservations_held_total.labels(show_id=str(show_id)).inc()
+
+                return ReserveResponse(**resp_dict)
             except (asyncpg.exceptions.DeadlockDetectedError, asyncpg.exceptions.LockNotAvailableError):
                 if attempt == 3:
                     raise DomainError("seat_taken", "Seat lock timeout", 409)

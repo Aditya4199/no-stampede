@@ -93,7 +93,8 @@ def create_app() -> FastAPI:
         
         # Collect metrics
         duration = time.perf_counter() - start_time
-        route = request.url.path
+        route_obj = request.scope.get("route")
+        route = route_obj.path if route_obj else "unmatched"
         code = response.status_code
         http_requests_total.labels(route=route, code=code).inc()
         http_request_duration_seconds.labels(route=route).observe(duration)
@@ -136,7 +137,8 @@ def create_app() -> FastAPI:
     # Exception handlers
     @app.exception_handler(DomainError)
     async def domain_error_handler(request: Request, exc: DomainError):
-        reservations_declined_total.labels(reason=exc.code).inc()
+        if exc.code in ("seat_taken", "per_user_limit", "idempotency_mismatch", "invalid_seats", "too_many_requests"):
+            reservations_declined_total.labels(reason=exc.code).inc()
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": {"code": exc.code, "message": exc.message}},
