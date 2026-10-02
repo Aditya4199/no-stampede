@@ -21,7 +21,7 @@ router = APIRouter(prefix="/shows")
 
 _reserve_semaphore: Optional[asyncio.Semaphore] = None
 
-def get_reserve_semaphore(request: Request) -> asyncio.Semaphore:
+async def get_reserve_semaphore(request: Request) -> asyncio.Semaphore:
     global _reserve_semaphore
     if _reserve_semaphore is None:
         _reserve_semaphore = asyncio.Semaphore(request.app.state.config.max_inflight_reserves)
@@ -219,7 +219,7 @@ async def reserve_seats(
     req_hash = hashlib.sha256(f"{show_id}-{','.join(sorted_seats)}".encode()).hexdigest()
     num_seats = len(sorted_seats)
 
-    sem = get_reserve_semaphore(request)
+    sem = await get_reserve_semaphore(request)
     try:
         async with asyncio.timeout(0.05):
             await sem.acquire()

@@ -23,6 +23,10 @@ def admin_token(app_instance):
 async def setup_db(app_instance):
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL not set")
+    
+    # Close existing pool before each test
+    await close_db()
+    
     cfg = app_instance.state.config
     await init_db(cfg)
     from app.store.migrations import run_migrations
@@ -277,7 +281,10 @@ async def test_reserve_scenario_5_concurrent_cancels(app_instance, admin_token):
         resp = await client.post(
             f"/shows/{show_id}/reserve",
             json={"seats": ["D1"]},
-            headers={"Authorization": f"Bearer {user_token}"}
+            headers={
+                "Authorization": f"Bearer {user_token}",
+                "Idempotency-Key": str(uuid.uuid4())
+            }
         )
         assert resp.status_code == 201
         reservation_id = resp.json()["reservation_id"]
@@ -315,7 +322,10 @@ async def test_reserve_scenario_6_cancel_vs_reserve_race(app_instance, admin_tok
         resp = await client.post(
             f"/shows/{show_id}/reserve",
             json={"seats": ["E1"]},
-            headers={"Authorization": f"Bearer {user_a_token}"}
+            headers={
+                "Authorization": f"Bearer {user_a_token}",
+                "Idempotency-Key": str(uuid.uuid4())
+            }
         )
         assert resp.status_code == 201
         reservation_id = resp.json()["reservation_id"]
@@ -393,15 +403,19 @@ async def test_reserve_scenario_7_expired_hold_takeover(app_instance, admin_toke
 
 @pytest.mark.asyncio
 async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
-    # Temporarily set max_inflight_reserves to 1
-    old_limit = app_instance.state.config.max_inflight_reserves
-    app_instance.state.config.max_inflight_reserves = 1
+    from app.main import create_app
+    from dataclasses import replace
+    
+    test_app = create_app()
+    # Use replace to create a new config with modified max_inflight_reserves
+    new_config = replace(test_app.state.config, max_inflight_reserves=1)
+    test_app.state.config = new_config
     
     # Reset the semaphore
     import app.api.shows as shows_api
     shows_api._reserve_semaphore = None
 
-    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://testserver") as client:
         show_payload = {
             "name": "Scenario 8 Show",
             "price_paise": 1000,
@@ -430,5 +444,4 @@ async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
         
         await verify_seats(show_id)
         
-    app_instance.state.config.max_inflight_reserves = old_limit
     shows_api._reserve_semaphore = None
