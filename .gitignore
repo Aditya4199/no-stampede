@@ -40,3 +40,8 @@ htmlcov/
 # OS files
 Thumbs.db
 .DS_Store
+pgsql/
+pgdata/
+postgres.log
+pw.txt
+postgres.zip

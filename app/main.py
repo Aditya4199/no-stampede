@@ -8,7 +8,7 @@ from typing import Any, Dict
 import uvicorn
 from fastapi import FastAPI
 
-from app.api import health_router, ready_router
+from app.api import health_router, internal_router, ready_router
 from app.config import Config
 from app.store.db import close_db, init_db
 from app.store.migrations import run_migrations
@@ -65,6 +65,7 @@ def create_app() -> FastAPI:
     # Routers
     app.include_router(health_router)
     app.include_router(ready_router)
+    app.include_router(internal_router)
 
     return app
 
