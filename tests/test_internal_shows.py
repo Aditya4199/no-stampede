@@ -23,7 +23,7 @@ def admin_token(app_instance):
 
 @pytest.fixture(scope="function")
 def headers(admin_token):
-    return {"Authorization": f"Bearer {admin_token}"}
+    return {"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
 
 @pytest.fixture(autouse=True)
 async def setup_db(app_instance):

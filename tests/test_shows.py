@@ -1,3 +1,4 @@
+import uuid
 import os
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -42,7 +43,7 @@ async def test_get_show(app_instance, admin_token):
         create_resp = await client.post(
             "/shows",
             json=create_payload,
-            headers={"Authorization": f"Bearer {admin_token}"}
+            headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert create_resp.status_code == 201
         show_id = create_resp.json()["id"]

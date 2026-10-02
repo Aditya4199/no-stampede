@@ -40,7 +40,7 @@ async def test_cancel_owner_only(app_instance):
         resp = await client.post(
             "/shows", 
             json={"name": "Cancel Test 1", "price_paise": 1000, "per_user_limit": 4, "seats": ["A1", "A2"]},
-            headers={"Authorization": f"Bearer {admin_token}"}
+            headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         show_id = resp.json()["id"]
 
@@ -57,14 +57,14 @@ async def test_cancel_owner_only(app_instance):
         # 3. Cancel with wrong user (should be 404 to not leak existence)
         resp_cancel_bad = await client.post(
             f"/reservations/{res_id}/cancel",
-            headers={"Authorization": f"Bearer {u2_token}"}
+            headers={"Authorization": f"Bearer {u2_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_cancel_bad.status_code == 404
 
         # 4. Cancel with owner (should be 200)
         resp_cancel_ok = await client.post(
             f"/reservations/{res_id}/cancel",
-            headers={"Authorization": f"Bearer {u1_token}"}
+            headers={"Authorization": f"Bearer {u1_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_cancel_ok.status_code == 200
         assert resp_cancel_ok.json()["status"] == "cancelled"
@@ -72,7 +72,7 @@ async def test_cancel_owner_only(app_instance):
         # 5. Idempotent cancel
         resp_cancel_idem = await client.post(
             f"/reservations/{res_id}/cancel",
-            headers={"Authorization": f"Bearer {u1_token}"}
+            headers={"Authorization": f"Bearer {u1_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_cancel_idem.status_code == 200
 
@@ -85,7 +85,7 @@ async def test_cancel_rebook(app_instance):
         resp = await client.post(
             "/shows", 
             json={"name": "Cancel Rebook", "price_paise": 1000, "per_user_limit": 4, "seats": ["B1"]},
-            headers={"Authorization": f"Bearer {admin_token}"}
+            headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         show_id = resp.json()["id"]
 
@@ -101,7 +101,7 @@ async def test_cancel_rebook(app_instance):
         # Cancel
         resp_cancel = await client.post(
             f"/reservations/{res1_id}/cancel",
-            headers={"Authorization": f"Bearer {u_token}"}
+            headers={"Authorization": f"Bearer {u_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_cancel.status_code == 200
 

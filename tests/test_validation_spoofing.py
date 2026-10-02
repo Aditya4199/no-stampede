@@ -38,7 +38,7 @@ async def test_spoof_and_validation(app_instance):
         resp = await client.post(
             "/shows", 
             json={"name": "Spoof Test", "price_paise": 1000, "per_user_limit": 4, "seats": ["A1", "A2"]},
-            headers={"Authorization": f"Bearer {admin_token}"}
+            headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp.status_code == 201
         show_id = resp.json()["id"]
@@ -60,7 +60,7 @@ async def test_spoof_and_validation(app_instance):
         resp_bad = await client.post(
             f"/shows/{show_id}/reserve",
             content="invalid json",
-            headers={"Authorization": f"Bearer {u_token}", "Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4())}
+            headers={"Authorization": f"Bearer {u_token}", "Idempotency-Key": str(uuid.uuid4()), "Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_bad.status_code == 400
 

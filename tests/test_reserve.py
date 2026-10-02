@@ -73,7 +73,7 @@ async def test_reserve_scenario_1_concurrent_distinct_users(app_instance, admin_
             "per_user_limit": 4,
             "seats": ["A12"]
         }
-        resp = await client.post("/shows", json=show_payload_1, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload_1, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         assert resp.status_code == 201
         show_1_id = resp.json()["id"]
 
@@ -84,7 +84,7 @@ async def test_reserve_scenario_1_concurrent_distinct_users(app_instance, admin_
                 f"/shows/{show_1_id}/reserve",
                 json={"seats": ["A12"]},
                 headers={
-                    "Authorization": f"Bearer {token}",
+                    "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4()),
                     "Idempotency-Key": idem_key
                 }
             )
@@ -112,7 +112,7 @@ async def test_reserve_scenario_2_per_user_limit(app_instance, admin_token):
             "per_user_limit": 4,
             "seats": seats_2
         }
-        resp = await client.post("/shows", json=show_payload_2, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload_2, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         assert resp.status_code == 201
         show_2_id = resp.json()["id"]
 
@@ -124,7 +124,7 @@ async def test_reserve_scenario_2_per_user_limit(app_instance, admin_token):
                 f"/shows/{show_2_id}/reserve",
                 json={"seats": [seat_label]},
                 headers={
-                    "Authorization": f"Bearer {s2_user_token}",
+                    "Authorization": f"Bearer {s2_user_token}", "Idempotency-Key": str(uuid.uuid4()),
                     "Idempotency-Key": idem_key
                 }
             )
@@ -150,7 +150,7 @@ async def test_reserve_scenario_3_idempotency(app_instance, admin_token):
             "per_user_limit": 4,
             "seats": ["B1"]
         }
-        resp = await client.post("/shows", json=show_payload_3, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload_3, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         assert resp.status_code == 201
         show_3_id = resp.json()["id"]
 
@@ -162,7 +162,7 @@ async def test_reserve_scenario_3_idempotency(app_instance, admin_token):
                 f"/shows/{show_3_id}/reserve",
                 json={"seats": ["B1"]},
                 headers={
-                    "Authorization": f"Bearer {s3_user_token}",
+                    "Authorization": f"Bearer {s3_user_token}", "Idempotency-Key": str(uuid.uuid4()),
                     "Idempotency-Key": s3_idem_key
                 }
             )
@@ -201,7 +201,7 @@ async def test_reserve_scenario_3a_idempotency_mismatch(app_instance, admin_toke
             "per_user_limit": 4,
             "seats": ["B1", "B2"]
         }
-        resp = await client.post("/shows", json=show_payload_3a, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload_3a, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         assert resp.status_code == 201
         show_3a_id = resp.json()["id"]
 
@@ -212,7 +212,7 @@ async def test_reserve_scenario_3a_idempotency_mismatch(app_instance, admin_toke
             f"/shows/{show_3a_id}/reserve",
             json={"seats": ["B1"]},
             headers={
-                "Authorization": f"Bearer {s3a_user_token}",
+                "Authorization": f"Bearer {s3a_user_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": s3a_idem_key
             }
         )
@@ -222,7 +222,7 @@ async def test_reserve_scenario_3a_idempotency_mismatch(app_instance, admin_toke
             f"/shows/{show_3a_id}/reserve",
             json={"seats": ["B2"]},  # Different seat
             headers={
-                "Authorization": f"Bearer {s3a_user_token}",
+                "Authorization": f"Bearer {s3a_user_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": s3a_idem_key
             }
         )
@@ -240,7 +240,7 @@ async def test_reserve_scenario_4_deadlock_lock_ordering(app_instance, admin_tok
             "per_user_limit": 4,
             "seats": ["C1", "C2"]
         }
-        resp = await client.post("/shows", json=show_payload_4, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload_4, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         assert resp.status_code == 201
         show_4_id = resp.json()["id"]
 
@@ -251,7 +251,7 @@ async def test_reserve_scenario_4_deadlock_lock_ordering(app_instance, admin_tok
                 f"/shows/{show_4_id}/reserve",
                 json={"seats": seats},
                 headers={
-                    "Authorization": f"Bearer {token}",
+                    "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4()),
                     "Idempotency-Key": idem_key
                 }
             )
@@ -285,7 +285,7 @@ async def test_reserve_scenario_5_concurrent_cancels(app_instance, admin_token):
             "per_user_limit": 4,
             "seats": ["D1"]
         }
-        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         assert resp.status_code == 201
         show_id = resp.json()["id"]
 
@@ -296,7 +296,7 @@ async def test_reserve_scenario_5_concurrent_cancels(app_instance, admin_token):
             f"/shows/{show_id}/reserve",
             json={"seats": ["D1"]},
             headers={
-                "Authorization": f"Bearer {user_token}",
+                "Authorization": f"Bearer {user_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": str(uuid.uuid4())
             }
         )
@@ -307,7 +307,7 @@ async def test_reserve_scenario_5_concurrent_cancels(app_instance, admin_token):
         async def cancel_res():
             return await client.post(
                 f"/reservations/{reservation_id}/cancel",
-                headers={"Authorization": f"Bearer {user_token}"}
+                headers={"Authorization": f"Bearer {user_token}", "Idempotency-Key": str(uuid.uuid4())}
             )
             
         tasks = [cancel_res() for _ in range(20)]
@@ -327,7 +327,7 @@ async def test_reserve_scenario_6_cancel_vs_reserve_race(app_instance, admin_tok
             "per_user_limit": 4,
             "seats": ["E1"]
         }
-        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         show_id = resp.json()["id"]
 
         user_a_token = create_user_token(app_instance, "user-s6-A")
@@ -337,7 +337,7 @@ async def test_reserve_scenario_6_cancel_vs_reserve_race(app_instance, admin_tok
             f"/shows/{show_id}/reserve",
             json={"seats": ["E1"]},
             headers={
-                "Authorization": f"Bearer {user_a_token}",
+                "Authorization": f"Bearer {user_a_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": str(uuid.uuid4())
             }
         )
@@ -347,7 +347,7 @@ async def test_reserve_scenario_6_cancel_vs_reserve_race(app_instance, admin_tok
         async def cancel_res():
             return await client.post(
                 f"/reservations/{reservation_id}/cancel",
-                headers={"Authorization": f"Bearer {user_a_token}"}
+                headers={"Authorization": f"Bearer {user_a_token}", "Idempotency-Key": str(uuid.uuid4())}
             )
 
         async def reserve_s6(idx):
@@ -355,7 +355,7 @@ async def test_reserve_scenario_6_cancel_vs_reserve_race(app_instance, admin_tok
             return await client.post(
                 f"/shows/{show_id}/reserve",
                 json={"seats": ["E1"]},
-                headers={"Authorization": f"Bearer {token}"}
+                headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
             )
 
         tasks = [cancel_res()] + [reserve_s6(i) for i in range(50)]
@@ -382,7 +382,7 @@ async def test_reserve_scenario_7_expired_hold_takeover(app_instance, admin_toke
             "hold_ttl_seconds": 1,
             "seats": ["F1"]
         }
-        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         show_id = resp.json()["id"]
 
         user_a_token = create_user_token(app_instance, "user-s7-A")
@@ -391,7 +391,7 @@ async def test_reserve_scenario_7_expired_hold_takeover(app_instance, admin_toke
         resp_a = await client.post(
             f"/shows/{show_id}/reserve",
             json={"seats": ["F1"]},
-            headers={"Authorization": f"Bearer {user_a_token}"}
+            headers={"Authorization": f"Bearer {user_a_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_a.status_code == 201
         res_a_id = resp_a.json()["reservation_id"]
@@ -401,7 +401,7 @@ async def test_reserve_scenario_7_expired_hold_takeover(app_instance, admin_toke
         resp_b = await client.post(
             f"/shows/{show_id}/reserve",
             json={"seats": ["F1"]},
-            headers={"Authorization": f"Bearer {user_b_token}"}
+            headers={"Authorization": f"Bearer {user_b_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_b.status_code == 201
         
@@ -425,6 +425,9 @@ async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
     new_config = replace(test_app.state.config, max_inflight_reserves=1)
     test_app.state.config = new_config
 
+    import os
+    os.environ["ADMISSION_WAIT_MS"] = "50"
+    
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://testserver") as client:
         show_payload = {
             "name": "Scenario 8 Show",
@@ -432,7 +435,7 @@ async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
             "per_user_limit": 4,
             "seats": ["G1", "G2"]
         }
-        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}"})
+        resp = await client.post("/shows", json=show_payload, headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())})
         show_id = resp.json()["id"]
 
         async def reserve_s8(idx):
@@ -440,7 +443,7 @@ async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
             return await client.post(
                 f"/shows/{show_id}/reserve",
                 json={"seats": ["G1"]},
-                headers={"Authorization": f"Bearer {token}"}
+                headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
             )
 
         tasks = [reserve_s8(i) for i in range(100)]

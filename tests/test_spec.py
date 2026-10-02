@@ -36,7 +36,7 @@ async def test_auth_errors(app_instance):
         token = r2.json()["token"]
 
         # Use non-admin token
-        r3 = await client.post("/shows", json={"name": "x", "price_paise": 1, "seats": ["A1"]}, headers={"Authorization": f"Bearer {token}"})
+        r3 = await client.post("/shows", json={"name": "x", "price_paise": 1, "seats": ["A1"]}, headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())})
         assert r3.status_code == 403
         assert r3.json()["error"]["code"] == "forbidden"
 
@@ -59,7 +59,7 @@ async def test_validation_errors(app_instance):
         # Mint admin token
         r = await client.post("/auth/token?role=admin")
         token = r.json()["token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
 
         # Empty seats list
         r1 = await client.post("/shows", json={"name": "x", "price_paise": 1, "seats": []}, headers=headers)
@@ -91,7 +91,7 @@ async def test_show_counts(app_instance):
     async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
         r = await client.post("/auth/token?role=admin")
         token = r.json()["token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
 
         create_r = await client.post("/shows", json={"name": "counts show", "price_paise": 1, "seats": ["A1", "A2", "A3"]}, headers=headers)
         show_id = create_r.json()["id"]

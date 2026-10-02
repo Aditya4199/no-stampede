@@ -48,7 +48,7 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
         create_resp = await client.post(
             "/shows",
             json=create_payload,
-            headers={"Authorization": f"Bearer {admin_token}"}
+            headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert create_resp.status_code == 201
         show_id = create_resp.json()["id"]
@@ -60,7 +60,7 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
             f"/shows/{show_id}/reserve",
             json=reserve_payload,
             headers={
-                "Authorization": f"Bearer {user_token}",
+                "Authorization": f"Bearer {user_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": idem_key
             }
         )
@@ -75,7 +75,7 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
             f"/shows/{show_id}/reserve",
             json=reserve_payload,
             headers={
-                "Authorization": f"Bearer {user_token}",
+                "Authorization": f"Bearer {user_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": idem_key
             }
         )
@@ -87,7 +87,7 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
             f"/shows/{show_id}/reserve",
             json={"seats": ["A3"]},
             headers={
-                "Authorization": f"Bearer {user_token}",
+                "Authorization": f"Bearer {user_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": idem_key
             }
         )
@@ -100,7 +100,7 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
             f"/shows/{show_id}/reserve",
             json={"seats": ["A3", "A4"]},
             headers={
-                "Authorization": f"Bearer {user_token}",
+                "Authorization": f"Bearer {user_token}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": idem_key_2
             }
         )
@@ -114,7 +114,7 @@ async def test_reserve_seats(app_instance, admin_token, user_token):
             f"/shows/{show_id}/reserve",
             json={"seats": ["A1"]},
             headers={
-                "Authorization": f"Bearer {user_token_2}",
+                "Authorization": f"Bearer {user_token_2}", "Idempotency-Key": str(uuid.uuid4()),
                 "Idempotency-Key": idem_key_3
             }
         )

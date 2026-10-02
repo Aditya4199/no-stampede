@@ -38,7 +38,7 @@ async def test_metrics_endpoint(app_instance):
         resp = await client.post(
             "/shows", 
             json={"name": "Metrics Test", "price_paise": 1000, "per_user_limit": 4, "seats": ["M1", "M2"]},
-            headers={"Authorization": f"Bearer {admin_token}"}
+            headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp.status_code == 201
         show_id = resp.json()["id"]
