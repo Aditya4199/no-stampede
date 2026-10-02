@@ -18,15 +18,16 @@ def percentile(data, p):
     return s_data[f] * (c - k) + s_data[c] * (k - f)
 
 class BurstClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, admin_key: str):
         self.base_url = base_url
         limits = httpx.Limits(max_keepalive_connections=None, max_connections=None)
         timeout = httpx.Timeout(60.0)
         self.client = httpx.AsyncClient(base_url=base_url, limits=limits, timeout=timeout)
         self.admin_token = ""
+        self.admin_key = admin_key
         
     async def get_token(self, user_id: str, role: str = "user") -> str:
-        headers = {"ADMIN_KEY": "super-admin-key"}
+        headers = {"ADMIN_KEY": self.admin_key}
         resp = await self.client.post(f"/auth/token?user_id={user_id}&role={role}", headers=headers)
         resp.raise_for_status()
         return resp.json()["token"]
@@ -38,7 +39,7 @@ class BurstClient:
         resp = await self.client.post(
             "/shows",
             json={"name": name, "price_paise": 1000, "per_user_limit": 4, "seats": seats},
-            headers={"Authorization": f"Bearer {self.admin_token}", "ADMIN_KEY": "dummy"}
+            headers={"Authorization": f"Bearer {self.admin_token}"}
         )
         resp.raise_for_status()
         return resp.json()["id"]
@@ -284,10 +285,14 @@ async def main():
     parser.add_argument("--concurrency", type=int, default=100)
     parser.add_argument("--requests", type=int, default=2000) # reduced default for fast local run, use 20000 for full test
     parser.add_argument("--users", type=int, default=500)
+    parser.add_argument("--admin-key", default=os.getenv("ADMIN_KEY", ""))
     
     args = parser.parse_args()
+    if not args.admin_key:
+        print("Error: --admin-key or ADMIN_KEY environment variable is required")
+        sys.exit(1)
     
-    client = BurstClient(args.url)
+    client = BurstClient(args.url, args.admin_key)
     try:
         await run_scenario_hot_seat(client)
         await run_scenario_per_user_limit(client)

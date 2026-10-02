@@ -45,3 +45,8 @@ pgdata/
 postgres.log
 pw.txt
 postgres.zip
+
+# Logs
+*.log
+fly_logs*.txt
+get_logs.py
