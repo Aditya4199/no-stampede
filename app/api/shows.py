@@ -1,14 +1,17 @@
 import uuid
 import logging
 import json
+import hashlib
 from typing import List, Optional
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.store.db import acquire_conn
 from app.exceptions import DomainError
-from app.auth.jwt import get_current_admin_user
+from app.auth.jwt import get_current_admin_user, get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/shows")
@@ -159,3 +162,140 @@ async def configure_show(show_id: uuid.UUID, req: ConfigureShowRequest, admin=De
             raise DomainError("not_found", "Show not found", 404)
 
     return {"status": "success"}
+
+class ReserveRequest(BaseModel):
+    seats: List[str] = Field(..., min_length=1, max_length=10)
+
+    @field_validator("seats")
+    @classmethod
+    def validate_seats(cls, seats: List[str]) -> List[str]:
+        seen = set()
+        for seat in seats:
+            if not seat or len(seat.strip()) == 0:
+                raise ValueError("Seat label cannot be empty")
+            if len(seat) > 16:
+                raise ValueError(f"Seat label '{seat}' is over 16 characters")
+            if seat in seen:
+                raise ValueError(f"Duplicate seat label '{seat}' found")
+            seen.add(seat)
+        return seats
+
+class ReserveResponse(BaseModel):
+    reservation_id: uuid.UUID
+    status: str
+    amount_paise: int
+    seats: List[str]
+
+@router.post("/{show_id}/reserve", response_model=ReserveResponse, status_code=201)
+async def reserve_seats(
+    show_id: uuid.UUID,
+    req: ReserveRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    user=Depends(get_current_user)
+):
+    user_id = user["sub"]
+    req_hash = hashlib.sha256(json.dumps(req.seats).encode()).hexdigest()
+
+    async with acquire_conn() as conn:
+        async with conn.transaction():
+            # 1. Idempotency Check
+            row = await conn.fetchrow(
+                """
+                INSERT INTO idempotency_keys (user_id, key, show_id, request_hash)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id, key) DO NOTHING
+                RETURNING 1
+                """,
+                user_id, idempotency_key, show_id, req_hash
+            )
+            if not row:
+                idem = await conn.fetchrow(
+                    "SELECT request_hash, response, status_code FROM idempotency_keys WHERE user_id=$1 AND key=$2",
+                    user_id, idempotency_key
+                )
+                if idem["request_hash"] != req_hash:
+                    raise DomainError("idempotency_mismatch", "Idempotency key already used for a different request", 409)
+                if idem["response"] is not None:
+                    return JSONResponse(status_code=idem["status_code"], content=json.loads(idem["response"]))
+                else:
+                    raise DomainError("conflict", "Concurrent request processing for same idempotency key", 409)
+
+            # 2. Fetch show config
+            show = await conn.fetchrow("SELECT price_paise, per_user_limit, hold_ttl_seconds FROM shows WHERE id=$1", show_id)
+            if not show:
+                raise DomainError("not_found", "Show not found", 404)
+            
+            num_seats = len(req.seats)
+            amount_paise = show["price_paise"] * num_seats
+
+            # 3. Lock seats FOR UPDATE in deterministic order
+            sorted_seats = sorted(req.seats)
+            seats_db = await conn.fetch(
+                """
+                SELECT label, status FROM seats 
+                WHERE show_id = $1 AND label = ANY($2)
+                ORDER BY label
+                FOR UPDATE
+                """,
+                show_id, sorted_seats
+            )
+            
+            if len(seats_db) != num_seats:
+                raise DomainError("invalid_seats", "One or more seats are invalid", 400)
+            
+            for seat in seats_db:
+                if seat["status"] != "available":
+                    raise DomainError("seat_taken", f"Seat {seat['label']} is not available", 409)
+
+            # 4. User quota check
+            quota = await conn.fetchrow(
+                """
+                INSERT INTO user_show_quota (user_id, show_id, active_count)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, show_id) DO UPDATE SET active_count = user_show_quota.active_count + $3
+                RETURNING active_count
+                """,
+                user_id, show_id, num_seats
+            )
+            if quota["active_count"] > show["per_user_limit"]:
+                raise DomainError("per_user_limit", f"Cannot reserve more than {show['per_user_limit']} seats", 409)
+
+            # 5. Reserve seats
+            reservation_id = uuid.uuid4()
+            ttl = show["hold_ttl_seconds"] or 900
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+
+            await conn.execute(
+                """
+                UPDATE seats
+                SET status = 'held', user_id = $1, reservation_id = $2, hold_expires_at = $3
+                WHERE show_id = $4 AND label = ANY($5)
+                """,
+                user_id, reservation_id, expires_at, show_id, sorted_seats
+            )
+
+            await conn.execute(
+                """
+                INSERT INTO reservations (id, show_id, user_id, seats, amount_paise, status)
+                VALUES ($1, $2, $3, $4, $5, 'held')
+                """,
+                reservation_id, show_id, user_id, sorted_seats, amount_paise
+            )
+
+            resp_dict = {
+                "reservation_id": str(reservation_id),
+                "status": "held",
+                "amount_paise": amount_paise,
+                "seats": sorted_seats
+            }
+            
+            await conn.execute(
+                """
+                UPDATE idempotency_keys
+                SET response = $1, status_code = 201
+                WHERE user_id = $2 AND key = $3
+                """,
+                json.dumps(resp_dict), user_id, idempotency_key
+            )
+
+            return ReserveResponse(**resp_dict)
