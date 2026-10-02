@@ -11,11 +11,12 @@ from fastapi.responses import JSONResponse
 import asyncpg
 import asyncio
 
-from app.api import auth_router, health_router, ready_router, shows_router
+from app.api import auth_router, health_router, ready_router, shows_router, reservations_router, metrics_router
 from app.config import Config
 from app.exceptions import DomainError
 from app.store.db import close_db, init_db
 from app.store.migrations import run_migrations
+from app.store.reaper import start_reaper, stop_reaper
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,11 @@ async def lifespan(app: FastAPI):
     cfg = app.state.config
     await init_db(cfg)
     await run_migrations()
+    await start_reaper(app)
     yield
     # Shutdown
     logger.info("Application shutting down")
+    await stop_reaper(app)
     await close_db()
 
 def create_app() -> FastAPI:
@@ -69,23 +72,63 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(ready_router)
     app.include_router(shows_router)
+    app.include_router(reservations_router)
+    app.include_router(metrics_router)
     
     from fastapi.exceptions import RequestValidationError
     from starlette.exceptions import HTTPException as StarletteHTTPException
     import uuid
     import traceback
 
+    import time
+    from app.metrics.collector import http_requests_total, http_request_duration_seconds, reservations_declined_total
+
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):
+        start_time = time.perf_counter()
         request_id = str(uuid.uuid4())
         request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
+        
+        # Collect metrics
+        duration = time.perf_counter() - start_time
+        route = request.url.path
+        code = response.status_code
+        http_requests_total.labels(route=route, code=code).inc()
+        http_request_duration_seconds.labels(route=route).observe(duration)
+        
+        # Log request
+        user_id = getattr(request.state, "user_id", "unknown")
+        logger.info(
+            "Request completed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": route,
+                "status": code,
+                "duration_ms": round(duration * 1000, 2),
+                "user_id": user_id
+            }
+        )
         return response
+
+    @app.middleware("http")
+    async def limit_upload_size(request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > 65536:  # 64KB
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "invalid_request", "message": "Request body too large"}},
+            )
+        # Also protect against chunked requests that exceed limit
+        # This is a basic implementation; for full streaming protection we would need custom route class
+        return await call_next(request)
 
     # Exception handlers
     @app.exception_handler(DomainError)
     async def domain_error_handler(request: Request, exc: DomainError):
+        reservations_declined_total.labels(reason=exc.code).inc()
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": {"code": exc.code, "message": exc.message}},

@@ -46,3 +46,13 @@ This document records the human-AI collaborative decisions, generated components
 - **Architectural changes**:
   - Created `/shows/{id}` endpoint combining counts of seats by status along with a JSON-aggregated list of all seats. 
   - Restricted `/auth/token` for generating `role=admin` tokens unless running in `dev` or explicitly authorized via `ADMIN_KEY`.
+
+### Phase 9 — Burst tool
+- **Commit**: `feat: add python burst testing harness and fix requirements`
+- **Model**: Gemini 3.1 Pro (High)
+- **Generated**:
+  - Load-testing harness `scripts/burst.py` wrapping scenarios (hot-seat storm, per-user limits, idempotency, spoofing, and stampede).
+  - Wrapper script `burst.sh` to trigger the Python burst test.
+- **Human Decisions / Clarifications**:
+  - Python was chosen over Go for the test client to keep the tech stack unified across the repo.
+  - Fixed Windows Unicode encoding and caught ReadErrors for httpx to ensure the script completes without crashing.

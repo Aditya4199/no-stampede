@@ -1,5 +1,5 @@
-fastapi>=0.142.2
-uvicorn[standard]==0.54.0
-asyncpg==0.30.0
-PyJWT==2.15.1
-prometheus-client==0.26.0
+fastapi
+uvicorn[standard]
+asyncpg
+PyJWT
+prometheus-client

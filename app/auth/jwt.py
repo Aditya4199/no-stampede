@@ -25,7 +25,9 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security)
 ) -> Dict[str, Any]:
     cfg: Config = request.app.state.config
-    return decode_token(credentials.credentials, cfg.jwt_secret)
+    payload = decode_token(credentials.credentials, cfg.jwt_secret)
+    request.state.user_id = payload.get("sub")
+    return payload
 
 async def get_current_admin_user(
     payload: Dict[str, Any] = Security(get_current_user)

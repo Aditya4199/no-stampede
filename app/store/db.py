@@ -1,5 +1,7 @@
 import logging
 from typing import Optional
+from contextlib import asynccontextmanager
+import time
 
 import asyncpg
 
@@ -55,8 +57,15 @@ def get_pool() -> asyncpg.Pool:
     return _pool
 
 
-def acquire_conn():
-    """Acquire a connection from the pool with the configured timeout."""
+@asynccontextmanager
+async def acquire_conn():
+    """Acquire a connection from the pool with the configured timeout and measure wait duration."""
     if _pool is None or _config is None:
         raise RuntimeError("Database pool is not initialized")
-    return _pool.acquire(timeout=_config.db_pool_acquire_timeout)
+        
+    start_time = time.perf_counter()
+    async with _pool.acquire(timeout=_config.db_pool_acquire_timeout) as conn:
+        wait_duration = time.perf_counter() - start_time
+        from app.metrics.collector import db_pool_wait_duration_seconds
+        db_pool_wait_duration_seconds.observe(wait_duration)
+        yield conn

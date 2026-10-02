@@ -215,16 +215,18 @@ async def reserve_seats(
         try:
             async with acquire_conn() as conn:
                 async with conn.transaction():
-                    # 1. Idempotency Check
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO idempotency_keys (user_id, key, show_id, request_hash)
-                        VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (user_id, key) DO NOTHING
-                        RETURNING 1
-                        """,
-                        user_id, idempotency_key, show_id, req_hash
-                    )
+                    try:
+                        row = await conn.fetchrow(
+                            """
+                            INSERT INTO idempotency_keys (user_id, key, show_id, request_hash)
+                            VALUES ($1, $2, $3, $4)
+                            ON CONFLICT (user_id, key) DO NOTHING
+                            RETURNING 1
+                            """,
+                            user_id, idempotency_key, show_id, req_hash
+                        )
+                    except asyncpg.exceptions.ForeignKeyViolationError:
+                        raise DomainError("not_found", "Show not found", 404)
                     if not row:
                         idem = await conn.fetchrow(
                             "SELECT request_hash, response, status_code FROM idempotency_keys WHERE user_id=$1 AND key=$2",
@@ -325,6 +327,10 @@ async def reserve_seats(
                         "amount_paise": amount_paise,
                         "seats": sorted_seats
                     }
+                    
+                    # Metrics
+                    from app.metrics.collector import reservations_confirmed_total
+                    reservations_confirmed_total.labels(show_id=str(show_id)).inc()
                     
                     await conn.execute(
                         """

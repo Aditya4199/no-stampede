@@ -1,6 +1,7 @@
 import time
 import jwt
 import hmac
+from typing import Optional
 from fastapi import APIRouter, Request, Header
 from app.exceptions import DomainError
 
@@ -11,7 +12,7 @@ async def issue_token(
     request: Request,
     user_id: str = "test-user",
     role: str = "user",
-    admin_key: str | None = Header(default=None, alias="ADMIN_KEY")
+    admin_key: Optional[str] = Header(default=None, alias="ADMIN_KEY")
 ):
     """Development token issuer."""
     cfg = request.app.state.config
