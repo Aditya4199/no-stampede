@@ -4,7 +4,7 @@ PYTHON ?= python
 PYTEST ?= pytest
 
 run:
-	$(PYTHON) -m uvicorn app.main:create_app --factory --reload
+	ENV=dev $(PYTHON) -m uvicorn app.main:create_app --factory --reload
 
 up:
 	docker compose up --build -d

@@ -12,7 +12,7 @@ High-concurrency ticket booking and seat reservation engine built with Python, F
 ## Development
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.12+
 - PostgreSQL 16+
 
 ### Setup
