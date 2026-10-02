@@ -80,7 +80,7 @@ async def test_unknown_show(app_instance):
         fake_id = str(uuid.uuid4())
         r = await client.get(f"/shows/{fake_id}")
         assert r.status_code == 404
-        assert r.json()["error"]["code"] == "show_not_found"
+        assert r.json()["error"]["code"] == "not_found"
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,7 @@
+.venv/
+pgdata/
+pgsql/
+pw.txt
+__pycache__/
+*.pyc
+.git/

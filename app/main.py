@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 import asyncpg
 import asyncio
 
-from app.api import auth_router, health_router, internal_router, ready_router, shows_router
+from app.api import auth_router, health_router, ready_router, shows_router
 from app.config import Config
 from app.exceptions import DomainError
 from app.store.db import close_db, init_db
@@ -68,7 +68,6 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(health_router)
     app.include_router(ready_router)
-    app.include_router(internal_router)
     app.include_router(shows_router)
     
     from fastapi.exceptions import RequestValidationError

@@ -25,7 +25,7 @@ class Config:
             "postgresql://postgres:password@localhost:5432/no_stampede",
         )
         
-        env = os.getenv("ENV", "dev")
+        env = os.getenv("ENV", "prod")
         jwt_secret = os.getenv("JWT_SECRET")
         if not jwt_secret:
             if env != "dev":

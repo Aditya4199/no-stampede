@@ -1,5 +1,6 @@
 import time
 import jwt
+import hmac
 from fastapi import APIRouter, Request, Header
 from app.exceptions import DomainError
 
@@ -16,8 +17,9 @@ async def issue_token(
     cfg = request.app.state.config
     
     if role == "admin":
-        if cfg.env != "dev" and admin_key != cfg.admin_key:
-            raise DomainError("forbidden", "Admin privileges cannot be minted in this environment without valid ADMIN_KEY", 403)
+        if cfg.env != "dev":
+            if not cfg.admin_key or not admin_key or not hmac.compare_digest(cfg.admin_key, admin_key):
+                raise DomainError("forbidden", "Admin privileges cannot be minted in this environment without valid ADMIN_KEY", 403)
             
     payload = {
         "sub": user_id,

@@ -5,7 +5,7 @@ from app.config import Config
 
 
 def test_config_load_defaults():
-    with mock.patch.dict(os.environ, {}, clear=True):
+    with mock.patch.dict(os.environ, {"ENV": "dev"}, clear=True):
         cfg = Config.load()
         assert cfg.port == 8080
         assert cfg.db_max_conns == 20
@@ -29,7 +29,7 @@ def test_config_load_custom():
 
 
 def test_config_invalid_port_fallback():
-    with mock.patch.dict(os.environ, {"PORT": "invalid", "DB_MAX_CONNS": "-5"}, clear=True):
+    with mock.patch.dict(os.environ, {"ENV": "dev", "PORT": "invalid", "DB_MAX_CONNS": "-5"}, clear=True):
         cfg = Config.load()
         assert cfg.port == 8080
         assert cfg.db_max_conns == 20

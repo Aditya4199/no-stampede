@@ -67,7 +67,7 @@ async def test_configure_show(app_instance, headers):
         configure_payload = {
             "hold_ttl_seconds": 300
         }
-        response = await client.patch(f"/internal/shows/{show_id}", json=configure_payload, headers=headers)
+        response = await client.patch(f"/shows/{show_id}", json=configure_payload, headers=headers)
     
     assert response.status_code == 200
     assert response.json() == {"status": "success"}

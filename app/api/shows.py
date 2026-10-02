@@ -22,7 +22,7 @@ class CreateShowRequest(BaseModel):
     name: str = Field(..., min_length=1)
     price_paise: int = Field(..., ge=0)
     per_user_limit: int = Field(4, gt=0)
-    hold_ttl_seconds: int = Field(300, gt=0)
+    hold_ttl_seconds: Optional[int] = Field(None, gt=0)
     seats: List[str] = Field(..., max_length=10000)
     
     @field_validator("seats")
@@ -105,7 +105,7 @@ async def get_show(show_id: uuid.UUID):
                        count(*) FILTER (WHERE status = 'available') as available_count,
                        count(*) FILTER (WHERE status = 'held') as held_count,
                        count(*) FILTER (WHERE status = 'confirmed') as confirmed_count,
-                       jsonb_agg(jsonb_build_object('label', label, 'status', status)) as seats_json
+                       jsonb_agg(jsonb_build_object('label', label, 'status', status) ORDER BY label) as seats_json
                 FROM seats
                 WHERE show_id = $1
                 GROUP BY show_id
@@ -124,7 +124,7 @@ async def get_show(show_id: uuid.UUID):
         )
         
         if not row:
-            raise DomainError("show_not_found", "Show not found", 404)
+            raise DomainError("not_found", "Show not found", 404)
 
     return ShowResponse(
         id=row["id"],
@@ -137,3 +137,25 @@ async def get_show(show_id: uuid.UUID):
         confirmed=row["confirmed"],
         seats=[SeatItem(**s) for s in (json.loads(row["seats"]) if isinstance(row["seats"], str) else row["seats"])]
     )
+
+
+class ConfigureShowRequest(BaseModel):
+    hold_ttl_seconds: int = Field(..., gt=0)
+
+@router.patch("/{show_id}", status_code=200)
+async def configure_show(show_id: uuid.UUID, req: ConfigureShowRequest, admin=Depends(get_current_admin_user)):
+    async with acquire_conn() as conn:
+        result = await conn.execute(
+            """
+            UPDATE shows
+            SET hold_ttl_seconds = $1
+            WHERE id = $2
+            """,
+            req.hold_ttl_seconds,
+            show_id,
+        )
+        
+        if result == "UPDATE 0":
+            raise DomainError("not_found", "Show not found", 404)
+
+    return {"status": "success"}

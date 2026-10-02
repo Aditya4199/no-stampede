@@ -31,4 +31,5 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgresql://postgres:password@localhost:5432/no_stampede
+          ENV: dev
         run: pytest -v
