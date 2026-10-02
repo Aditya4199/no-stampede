@@ -120,7 +120,6 @@ def create_app() -> FastAPI:
         if content_length:
             try:
                 cl = int(content_length)
-                print(f"Content length: {cl}")
                 if cl > 1048576:  # 1MB
                     return JSONResponse(
                         status_code=400,
