@@ -25,9 +25,14 @@ async def init_db(config: Config) -> None:
     try:
         _pool = await asyncpg.create_pool(
             config.database_url,
-            min_size=5,
-            max_size=20,
+            min_size=min(5, config.db_max_conns),
+            max_size=config.db_max_conns,
             command_timeout=30.0,
+            server_settings={
+                "statement_timeout": "5000",
+                "lock_timeout": "2000",
+                "timezone": "UTC"
+            }
         )
         logger.info("Database connection pool initialized")
     except Exception as e:
