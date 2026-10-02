@@ -167,9 +167,9 @@ def create_app() -> FastAPI:
     async def database_timeout_error_handler(request: Request, exc: Exception):
         logger.error(f"Database error on {request.url.path}: {exc}")
         return JSONResponse(
-            status_code=429,
-            content={"error": {"code": "too_many_requests", "message": "The service is currently overloaded. Please try again later."}},
-            headers={"Retry-After": "5"}
+            status_code=503,
+            content={"error": {"code": "service_unavailable", "message": "Service unavailable"}},
+            headers={"Retry-After": "2"}
         )
         
     @app.exception_handler(Exception)
@@ -177,9 +177,8 @@ def create_app() -> FastAPI:
         request_id = getattr(request.state, "request_id", "unknown")
         logger.error(f"Unhandled exception [req_id={request_id}]: {exc}", exc_info=True)
         return JSONResponse(
-            status_code=429,
-            content={"error": {"code": "too_many_requests", "message": "The service is currently overloaded. Please try again later."}},
-            headers={"Retry-After": "5"}
+            status_code=500,
+            content={"error": {"code": "internal_error", "message": "Internal server error"}},
         )
 
     return app
