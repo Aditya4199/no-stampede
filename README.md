@@ -36,12 +36,25 @@ make run
 ```
 
 ### API Endpoints
+
 - `GET /healthz` - Liveness probe
 - `GET /readyz` - Readiness probe (database connectivity)
-- `POST /auth/token` (Planned) - Development token issuer
-- `POST /internal/shows` - Create show and seats (Admin)
-- `POST /internal/shows/{id}` - Configure show
-- `GET /shows/{id}` (Planned) - Show availability and counts
+- `POST /auth/token` - Development token issuer (requires `ENV=dev` or `ADMIN_KEY` for admin tokens)
+  ```bash
+  curl -X POST http://localhost:8080/auth/token?role=admin
+  ```
+- `POST /shows` - Create show and seats (Admin only)
+  ```bash
+  curl -X POST http://localhost:8080/shows \
+    -H "Authorization: Bearer <TOKEN>" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Eras Tour", "price_paise": 500000, "per_user_limit": 4, "seats": ["A1", "A2"]}'
+  ```
+- `GET /shows/{id}` - Show availability and counts
+  ```bash
+  curl http://localhost:8080/shows/<SHOW_ID>
+  ```
+- `PATCH /internal/shows/{id}` - Configure show
 - `POST /shows/{id}/reserve` (Planned) - Atomic seat reservation
 - `POST /reservations/{id}/cancel` (Planned) - Owner-only cancellation
 - `GET /metrics` (Planned) - Prometheus metrics

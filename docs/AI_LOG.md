@@ -34,3 +34,15 @@ This document records the human-AI collaborative decisions, generated components
 ### Phase 4 — Internal API - Show Configuration
 - Added `POST /internal/shows/{show_id}` endpoint.
 - Updated `hold_ttl_seconds` setting for a show.
+
+### Phase 4.1 — Alignment, Security, and Spec Compliance
+- **Bugs found during review**:
+  - `POST /shows` and `PATCH /internal/shows/{id}` had no authentication. Fixed by adding JWT role checking (requires `role=admin`).
+  - DB failures threw unhandled 500s. Fixed by implementing a `DomainError` exception handler and mapping `asyncpg` timeout/connection errors to `503 Service Unavailable` with `Retry-After: 5`.
+  - The request shape for `POST /shows` allowed unbounded memory allocation with `total_seats`. Fixed by migrating to taking an explicit `seats[]` array and validating it using pydantic (`max_length=10000`).
+  - Tests only used mocks. Re-wrote `test_shows.py` and `test_internal_shows.py` to target the actual Postgres database spun up locally.
+  - Test migration didn't verify a successful insert count. Updated to check `count == 1`.
+  - `docker-compose.yml` had obsolete `version` tag. Cleaned it up and added `app` build to test from a clean clone.
+- **Architectural changes**:
+  - Created `/shows/{id}` endpoint combining counts of seats by status along with a JSON-aggregated list of all seats. 
+  - Restricted `/auth/token` for generating `role=admin` tokens unless running in `dev` or explicitly authorized via `ADMIN_KEY`.
