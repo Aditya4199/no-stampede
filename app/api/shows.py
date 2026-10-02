@@ -19,13 +19,10 @@ from app.auth.jwt import get_current_admin_user, get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/shows")
 
-_reserve_semaphore: Optional[asyncio.Semaphore] = None
-
 async def get_reserve_semaphore(request: Request) -> asyncio.Semaphore:
-    global _reserve_semaphore
-    if _reserve_semaphore is None:
-        _reserve_semaphore = asyncio.Semaphore(request.app.state.config.max_inflight_reserves)
-    return _reserve_semaphore
+    if not hasattr(request.app.state, "reserve_semaphore") or request.app.state.reserve_semaphore is None:
+        request.app.state.reserve_semaphore = asyncio.Semaphore(request.app.state.config.max_inflight_reserves)
+    return request.app.state.reserve_semaphore
 
 class SeatItem(BaseModel):
     label: str

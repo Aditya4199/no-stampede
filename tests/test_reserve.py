@@ -410,10 +410,6 @@ async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
     # Use replace to create a new config with modified max_inflight_reserves
     new_config = replace(test_app.state.config, max_inflight_reserves=1)
     test_app.state.config = new_config
-    
-    # Reset the semaphore
-    import app.api.shows as shows_api
-    shows_api._reserve_semaphore = None
 
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://testserver") as client:
         show_payload = {
@@ -443,5 +439,3 @@ async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
         assert status_counts[429] > 0, "Expected some 429 Too Many Requests"
         
         await verify_seats(show_id)
-        
-    shows_api._reserve_semaphore = None

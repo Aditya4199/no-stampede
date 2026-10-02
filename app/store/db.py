@@ -25,8 +25,10 @@ async def init_db(config: Config) -> None:
     try:
         _pool = await asyncpg.create_pool(
             dsn=config.database_url,
-            min_size=4,
-            max_size=config.db_max_conns,
+            min_size=10,
+            max_size=20,
+            max_queries=50000,
+            max_inactive_connection_lifetime=300.0,
             server_settings={
                 "statement_timeout": "5000",
                 "lock_timeout": "3000",

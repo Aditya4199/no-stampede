@@ -28,6 +28,8 @@ async def test_migrations_are_idempotent():
         pool = get_pool()
         async with pool.acquire() as conn:
             count = await conn.fetchval("SELECT count(*) FROM schema_migrations")
-            assert count == 1
+            import glob
+            files = glob.glob("migrations/*.sql")
+            assert count == len(files)
     finally:
         await close_db()
