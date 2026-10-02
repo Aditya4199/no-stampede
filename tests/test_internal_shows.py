@@ -22,12 +22,13 @@ async def test_create_show(monkeypatch):
         def transaction(self):
             return self
 
-    class MockPool:
-        def acquire(self):
-            return MockConnection()
+    import contextlib
+    @contextlib.asynccontextmanager
+    async def mock_acquire():
+        yield MockConnection()
 
     import app.api.internal
-    monkeypatch.setattr(app.api.internal, "get_pool", lambda: MockPool())
+    monkeypatch.setattr(app.api.internal, "acquire_conn", mock_acquire)
     
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -42,3 +43,36 @@ async def test_create_show(monkeypatch):
     assert response.status_code == 201
     data = response.json()
     assert "show_id" in data
+
+
+@pytest.mark.asyncio
+async def test_configure_show(monkeypatch):
+    class MockConnection:
+        async def execute(self, *args, **kwargs):
+            # return "UPDATE 1" so it simulates a found show
+            return "UPDATE 1"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+
+    import contextlib
+    @contextlib.asynccontextmanager
+    async def mock_acquire():
+        yield MockConnection()
+
+    import app.api.internal
+    monkeypatch.setattr(app.api.internal, "acquire_conn", mock_acquire)
+    
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        payload = {
+            "hold_ttl_seconds": 300
+        }
+        # Using a valid UUID
+        response = await client.post("/internal/shows/12345678-1234-5678-1234-567812345678", json=payload)
+    
+    assert response.status_code == 200
+    assert response.json() == {"status": "success"}
