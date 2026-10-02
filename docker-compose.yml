@@ -6,6 +6,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:password@db:5432/no_stampede
       - ENV=dev
+      - ADMIN_KEY=admin
     depends_on:
       db:
         condition: service_healthy
