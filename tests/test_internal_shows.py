@@ -1,44 +1,48 @@
+import os
+import uuid
 import pytest
+import jwt
 from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
+from app.config import Config
+from app.store.db import init_db, close_db
+
+@pytest.fixture(scope="module")
+def app_instance():
+    return create_app()
+
+@pytest.fixture(scope="module")
+def admin_token(app_instance):
+    cfg = app_instance.state.config
+    payload = {"role": "admin", "user_id": "test-admin"}
+    token = jwt.encode(payload, cfg.jwt_secret, algorithm="HS256")
+    return token
+
+@pytest.fixture(scope="module")
+def headers(admin_token):
+    return {"Authorization": f"Bearer {admin_token}"}
+
+@pytest.fixture(autouse=True)
+async def setup_db(app_instance):
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL not set")
+    cfg = app_instance.state.config
+    await init_db(cfg)
+    yield
+    await close_db()
 
 
 @pytest.mark.asyncio
-async def test_create_show(monkeypatch):
-    class MockConnection:
-        async def execute(self, *args, **kwargs):
-            pass
-            
-        async def copy_records_to_table(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-            
-        async def __aexit__(self, exc_type, exc, tb):
-            pass
-            
-        def transaction(self):
-            return self
-
-    import contextlib
-    @contextlib.asynccontextmanager
-    async def mock_acquire():
-        yield MockConnection()
-
-    import app.api.internal
-    monkeypatch.setattr(app.api.internal, "acquire_conn", mock_acquire)
-    
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+async def test_create_show(app_instance, headers):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
         payload = {
-            "name": "Test Show",
+            "name": "Integration Test Show",
             "price_paise": 1000,
             "per_user_limit": 4,
-            "total_seats": 50
+            "seats": ["A1", "A2", "A3", "A4"]
         }
-        response = await client.post("/internal/shows", json=payload)
+        response = await client.post("/internal/shows", json=payload, headers=headers)
     
     assert response.status_code == 201
     data = response.json()
@@ -46,33 +50,24 @@ async def test_create_show(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_configure_show(monkeypatch):
-    class MockConnection:
-        async def execute(self, *args, **kwargs):
-            # return "UPDATE 1" so it simulates a found show
-            return "UPDATE 1"
+async def test_configure_show(app_instance, headers):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+        # First create a show to update
+        create_payload = {
+            "name": "Configure Test Show",
+            "price_paise": 500,
+            "per_user_limit": 2,
+            "seats": ["B1", "B2"]
+        }
+        create_resp = await client.post("/internal/shows", json=create_payload, headers=headers)
+        assert create_resp.status_code == 201
+        show_id = create_resp.json()["show_id"]
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            pass
-
-    import contextlib
-    @contextlib.asynccontextmanager
-    async def mock_acquire():
-        yield MockConnection()
-
-    import app.api.internal
-    monkeypatch.setattr(app.api.internal, "acquire_conn", mock_acquire)
-    
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
-        payload = {
+        # Now configure it
+        configure_payload = {
             "hold_ttl_seconds": 300
         }
-        # Using a valid UUID
-        response = await client.post("/internal/shows/12345678-1234-5678-1234-567812345678", json=payload)
+        response = await client.patch(f"/internal/shows/{show_id}", json=configure_payload, headers=headers)
     
     assert response.status_code == 200
     assert response.json() == {"status": "success"}
