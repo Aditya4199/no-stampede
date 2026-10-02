@@ -10,7 +10,7 @@ def test_config_load_defaults():
         assert cfg.port == 8080
         assert cfg.db_max_conns == 20
         assert "5432" in cfg.database_url
-        assert cfg.jwt_secret == "super-secret-jwt-key-for-dev"
+        assert cfg.jwt_secret == "supersecret-dev-jwt-key-must-be-at-least-32-bytes"
 
 
 def test_config_load_custom():

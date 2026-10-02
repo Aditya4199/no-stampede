@@ -37,12 +37,12 @@ async def test_get_show(app_instance, admin_token):
             "seats": ["A1", "A2", "A3"]
         }
         create_resp = await client.post(
-            "/internal/shows",
+            "/shows",
             json=create_payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert create_resp.status_code == 201
-        show_id = create_resp.json()["show_id"]
+        show_id = create_resp.json()["id"]
 
         # Now fetch it via public endpoint
         resp = await client.get(f"/shows/{show_id}")
@@ -51,4 +51,4 @@ async def test_get_show(app_instance, admin_token):
         assert data["name"] == "Public Show Test"
         assert data["price_paise"] == 1000
         assert data["total_seats"] == 3
-        assert data["available_seats"] == 3
+        assert data["available"] == 3

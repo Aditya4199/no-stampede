@@ -42,11 +42,11 @@ async def test_create_show(app_instance, headers):
             "per_user_limit": 4,
             "seats": ["A1", "A2", "A3", "A4"]
         }
-        response = await client.post("/internal/shows", json=payload, headers=headers)
+        response = await client.post("/shows", json=payload, headers=headers)
     
     assert response.status_code == 201
     data = response.json()
-    assert "show_id" in data
+    assert "id" in data
 
 
 @pytest.mark.asyncio
@@ -59,9 +59,9 @@ async def test_configure_show(app_instance, headers):
             "per_user_limit": 2,
             "seats": ["B1", "B2"]
         }
-        create_resp = await client.post("/internal/shows", json=create_payload, headers=headers)
+        create_resp = await client.post("/shows", json=create_payload, headers=headers)
         assert create_resp.status_code == 201
-        show_id = create_resp.json()["show_id"]
+        show_id = create_resp.json()["id"]
 
         # Now configure it
         configure_payload = {
