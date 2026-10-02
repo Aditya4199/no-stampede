@@ -217,8 +217,7 @@ async def reserve_seats(
     num_seats = len(sorted_seats)
 
     sem = await get_reserve_semaphore(request)
-    import os
-    admission_wait_ms = int(os.environ.get("ADMISSION_WAIT_MS", "1500"))
+    admission_wait_ms = request.app.state.config.admission_wait_ms
     try:
         await asyncio.wait_for(sem.acquire(), timeout=admission_wait_ms / 1000.0)
     except (asyncio.TimeoutError, TimeoutError):

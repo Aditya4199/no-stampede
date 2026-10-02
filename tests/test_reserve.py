@@ -1,6 +1,5 @@
 import asyncio
 import os
-os.environ["MAX_INFLIGHT_RESERVES"] = "2000"
 import uuid
 from collections import Counter
 import pytest
@@ -419,15 +418,15 @@ async def test_reserve_scenario_7_expired_hold_takeover(app_instance, admin_toke
 async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
     from app.main import create_app
     from dataclasses import replace
-    
+
     test_app = create_app()
-    # Use replace to create a new config with modified max_inflight_reserves
-    new_config = replace(test_app.state.config, max_inflight_reserves=1)
+    new_config = replace(
+        test_app.state.config,
+        max_inflight_reserves=1,
+        admission_wait_ms=50,
+    )
     test_app.state.config = new_config
 
-    import os
-    os.environ["ADMISSION_WAIT_MS"] = "50"
-    
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://testserver") as client:
         show_payload = {
             "name": "Scenario 8 Show",

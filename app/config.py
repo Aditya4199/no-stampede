@@ -10,6 +10,7 @@ class Config:
     db_max_conns: int
     db_pool_acquire_timeout: float
     max_inflight_reserves: int
+    admission_wait_ms: int
     admin_key: str
     env: str
 
@@ -56,6 +57,12 @@ class Config:
         else:
             max_inflight_reserves = 2 * db_max_conns
 
+        admission_wait_ms_raw = os.getenv("ADMISSION_WAIT_MS", "1500")
+        try:
+            admission_wait_ms = int(admission_wait_ms_raw)
+        except ValueError:
+            admission_wait_ms = 1500
+
         return cls(
             port=port,
             database_url=database_url,
@@ -63,6 +70,7 @@ class Config:
             db_max_conns=db_max_conns,
             db_pool_acquire_timeout=db_pool_acquire_timeout,
             max_inflight_reserves=max_inflight_reserves,
+            admission_wait_ms=admission_wait_ms,
             admin_key=os.getenv("ADMIN_KEY", ""),
             env=env,
         )
