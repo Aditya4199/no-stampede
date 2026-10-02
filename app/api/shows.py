@@ -209,14 +209,18 @@ async def reserve_seats(
         return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Missing sub in token"}})
         
     idempotency_key = idempotency_key_header or req.idempotency_key
+    if not idempotency_key:
+        return JSONResponse(status_code=400, content={"error": {"code": "invalid_request", "message": "Idempotency key is required"}})
 
     sorted_seats = sorted(req.seats)
     req_hash = hashlib.sha256(f"{show_id}-{','.join(sorted_seats)}".encode()).hexdigest()
     num_seats = len(sorted_seats)
 
     sem = await get_reserve_semaphore(request)
+    import os
+    admission_wait_ms = int(os.environ.get("ADMISSION_WAIT_MS", "1500"))
     try:
-        await asyncio.wait_for(sem.acquire(), timeout=0.05)
+        await asyncio.wait_for(sem.acquire(), timeout=admission_wait_ms / 1000.0)
     except (asyncio.TimeoutError, TimeoutError):
         return JSONResponse(
             status_code=429,
@@ -228,6 +232,37 @@ async def reserve_seats(
         for attempt in range(1, 4):
             try:
                 async with acquire_conn() as conn:
+                    # Idempotency fast path check to avoid 409 seat_taken on retries
+                    if idempotency_key:
+                        fast_idem = await conn.fetchrow(
+                            "SELECT request_hash, response, status_code FROM idempotency_keys WHERE user_id=$1 AND key=$2",
+                            user_id, idempotency_key
+                        )
+                        if fast_idem and fast_idem["response"] is not None:
+                            if fast_idem["request_hash"] != req_hash:
+                                raise DomainError("idempotency_mismatch", "Idempotency key already used for a different request", 409)
+                            return JSONResponse(status_code=fast_idem["status_code"], content=json.loads(fast_idem["response"]))
+
+                    # Pre-check unlocked
+                    # Check if show exists first to avoid masking 404 with 400
+                    show_exists = await conn.fetchval("SELECT 1 FROM shows WHERE id=$1", show_id)
+                    if not show_exists:
+                        raise DomainError("not_found", "Show not found", 404)
+
+                    pre_check = await conn.fetch(
+                        "SELECT label, status, hold_expires_at FROM seats WHERE show_id = $1 AND label = ANY($2)",
+                        show_id, sorted_seats
+                    )
+                    if len(pre_check) != num_seats:
+                        raise DomainError("invalid_seats", "One or more seats are invalid", 400)
+                    now_row = await conn.fetchrow("SELECT NOW()")
+                    now = now_row["now"]
+                    for seat in pre_check:
+                        if seat["status"] == "confirmed":
+                            raise DomainError("seat_taken", f"Seat {seat['label']} is already booked", 409)
+                        if seat["status"] == "held" and seat["hold_expires_at"] > now:
+                            raise DomainError("seat_taken", f"Seat {seat['label']} is currently held", 409)
+
                     async with conn.transaction():
                         if idempotency_key:
                             for idem_attempt in range(3):
