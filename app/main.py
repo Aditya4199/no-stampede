@@ -8,8 +8,10 @@ from typing import Any, Dict
 import uvicorn
 from fastapi import FastAPI
 
-from app.api.health import router as health_router
+from app.api import health_router, ready_router
 from app.config import Config
+from app.store.db import close_db, init_db
+from app.store.migrations import run_migrations
 
 
 class JSONFormatter(logging.Formatter):
@@ -40,9 +42,13 @@ async def lifespan(app: FastAPI):
     # Startup
     logger = logging.getLogger("app")
     logger.info("Application starting up")
+    cfg = app.state.config
+    await init_db(cfg)
+    await run_migrations()
     yield
     # Shutdown
     logger.info("Application shutting down")
+    await close_db()
 
 
 def create_app() -> FastAPI:
@@ -58,6 +64,7 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(health_router)
+    app.include_router(ready_router)
 
     return app
 
