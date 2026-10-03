@@ -1,8 +1,4 @@
-import time
 from prometheus_client import Counter, Histogram, Gauge
-from prometheus_client.registry import Collector
-from prometheus_client.core import GaugeMetricFamily
-from app.store.db import get_pool
 
 # HTTP Metrics
 http_requests_total = Counter(

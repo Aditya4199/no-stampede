@@ -455,3 +455,7 @@ async def test_reserve_scenario_8_load_shedding(app_instance, admin_token):
         assert status_counts[429] > 0, "Expected some 429 Too Many Requests"
         
         await verify_seats(show_id)
+
+        metrics_resp = await client.get("/metrics")
+        assert metrics_resp.status_code == 200
+        assert 'reservations_declined_total{reason="too_many_requests"}' in metrics_resp.text

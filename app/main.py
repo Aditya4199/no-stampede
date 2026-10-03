@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 class JSONFormatter(logging.Formatter):
     """Formats log records as single-line JSON objects."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._standard_attrs = set(vars(logging.makeLogRecord({}))) | {"message", "asctime"}
+
     def format(self, record: logging.LogRecord) -> str:
         log_entry: Dict[str, Any] = {
             "time": datetime.now(timezone.utc).isoformat(),
@@ -30,9 +34,14 @@ class JSONFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        
+        for key, value in record.__dict__.items():
+            if key not in self._standard_attrs:
+                log_entry[key] = value
+                
         if record.exc_info:
             log_entry["exception"] = self.formatException(record.exc_info)
-        return json.dumps(log_entry)
+        return json.dumps(log_entry, default=str)
 
 def setup_logging():
     handler = logging.StreamHandler(sys.stdout)

@@ -112,3 +112,44 @@ async def test_cancel_rebook(app_instance):
             headers={"Authorization": f"Bearer {u_token}", "Idempotency-Key": str(uuid.uuid4())}
         )
         assert resp_res2.status_code == 201
+
+@pytest.mark.asyncio
+async def test_concurrent_cancel(app_instance):
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://testserver") as client:
+        admin_token = create_token(app_instance, "admin-3", "admin")
+        u_token = create_token(app_instance, "user-c3")
+        
+        resp = await client.post(
+            "/shows", 
+            json={"name": "Cancel Concurrent", "price_paise": 1000, "per_user_limit": 4, "seats": ["C1"]},
+            headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
+        )
+        show_id = resp.json()["id"]
+
+        resp_res = await client.post(
+            f"/shows/{show_id}/reserve",
+            json={"seats": ["C1"]},
+            headers={"Authorization": f"Bearer {u_token}", "Idempotency-Key": str(uuid.uuid4())}
+        )
+        assert resp_res.status_code == 201
+        res_id = resp_res.json()["reservation_id"]
+        
+        async def cancel_req():
+            return await client.post(
+                f"/reservations/{res_id}/cancel",
+                headers={"Authorization": f"Bearer {u_token}", "Idempotency-Key": str(uuid.uuid4())}
+            )
+            
+        tasks = [cancel_req() for _ in range(20)]
+        results = await asyncio.gather(*tasks)
+        
+        for r in results:
+            assert r.status_code == 200
+            
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            quota = await conn.fetchval("SELECT active_count FROM user_show_quota WHERE user_id = 'user-c3' AND show_id = $1", uuid.UUID(show_id))
+            assert quota == 0
+            
+            seat_status = await conn.fetchval("SELECT status FROM seats WHERE show_id = $1 AND label = 'C1'", uuid.UUID(show_id))
+            assert seat_status == "available"

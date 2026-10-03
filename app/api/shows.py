@@ -8,13 +8,14 @@ import asyncpg
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.store.db import acquire_conn
 from app.exceptions import DomainError
 from app.auth.jwt import get_current_admin_user, get_current_user
+from app.metrics.collector import reservations_declined_total
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/shows")
@@ -221,6 +222,7 @@ async def reserve_seats(
     try:
         await asyncio.wait_for(sem.acquire(), timeout=admission_wait_ms / 1000.0)
     except (asyncio.TimeoutError, TimeoutError):
+        reservations_declined_total.labels(reason="too_many_requests").inc()
         return JSONResponse(
             status_code=429,
             content={"error": {"code": "too_many_requests", "message": "The service is currently overloaded. Please try again later."}},

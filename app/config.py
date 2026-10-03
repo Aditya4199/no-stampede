@@ -49,13 +49,15 @@ class Config:
             db_pool_acquire_timeout = 5.0
             
         max_inflight_raw = os.getenv("MAX_INFLIGHT_RESERVES")
+        # Each reserve uses exactly one connection, so admitting more than the pool size leads to pool-acquire timeouts and 503s.
+        default_inflight = max(1, db_max_conns - 5)
         if max_inflight_raw:
             try:
                 max_inflight_reserves = int(max_inflight_raw)
             except ValueError:
-                max_inflight_reserves = 2 * db_max_conns
+                max_inflight_reserves = default_inflight
         else:
-            max_inflight_reserves = 2 * db_max_conns
+            max_inflight_reserves = default_inflight
 
         admission_wait_ms_raw = os.getenv("ADMISSION_WAIT_MS", "1500")
         try:

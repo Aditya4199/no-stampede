@@ -18,6 +18,12 @@ def percentile(data, p):
     if f == c: return s_data[int(k)]
     return s_data[f] * (c - k) + s_data[c] * (k - f)
 
+def check_no_server_errors(status_counts, scenario):
+    bad = {st: n for st, n in status_counts.items() if st >= 500 or st == 0}
+    if bad:
+        print(f"[FAIL] {scenario}: server/client errors {bad}")
+        sys.exit(1)
+
 class BurstClient:
     def __init__(self, base_url: str, admin_key: str):
         self.base_url = base_url
@@ -76,8 +82,11 @@ class BurstClient:
 
     async def cancel(self, reservation_id: str, token: str):
         headers = {"Authorization": f"Bearer {token}"}
-        resp = await self.client.post(f"/reservations/{reservation_id}/cancel", headers=headers)
-        return resp.status_code, resp.json()
+        try:
+            resp = await self.client.post(f"/reservations/{reservation_id}/cancel", headers=headers)
+            return resp.status_code, resp.json()
+        except Exception as e:
+            return 0, {"error": {"code": "client_error", "message": str(e)}}
         
     async def close(self):
         await self.client.aclose()
@@ -109,9 +118,7 @@ async def run_scenario_hot_seat(client: BurstClient):
     if 429 in status_counts:
         print("Sample 429s:", [b for s, b, _ in results if s == 429][:2])
     
-    for st in status_counts:
-        if st >= 500:
-            assert False, f"Failing run: encountered status {st} >= 500"
+    check_no_server_errors(status_counts, "Hot-seat storm")
             
     assert status_counts.get(201, 0) == 1, "Exactly 1 request should succeed"
     assert status_counts.get(409, 0) + status_counts.get(429, 0) == 499, "Rest should be 409 or 429"
@@ -136,6 +143,7 @@ async def run_scenario_per_user_limit(client: BurstClient):
         status_counts[st] = status_counts.get(st, 0) + 1
         
     print(f"Status codes: {status_counts}")
+    check_no_server_errors(status_counts, "Per-user limit")
     assert status_counts.get(201, 0) <= 4, "No more than 4 requests should succeed"
     print("[PASS] Per-user limit passed")
     return results
@@ -159,6 +167,7 @@ async def run_scenario_idempotency(client: BurstClient):
             res_ids.add(body.get("reservation_id"))
             
     print(f"Phase 1 Status codes: {status_counts}")
+    check_no_server_errors(status_counts, "Idempotency")
     assert len(res_ids) == 1, "Should have exactly one reservation ID returned for all 201s"
     
     # same key diff seats
@@ -262,11 +271,42 @@ async def run_scenario_stampede(client: BurstClient, args):
     p99 = percentile(latencies, 99)
     print(f"Latencies: p50={p50*1000:.1f}ms, p95={p95*1000:.1f}ms, p99={p99*1000:.1f}ms")
     
-    if status_counts.get(500, 0) > 0 or status_counts.get(502, 0) > 0 or status_counts.get(503, 0) > 0:
-        print("[FAIL] 5xx count must be 0")
-        sys.exit(1)
+    reserved_seats = {}
+    for st, body, _ in results:
+        if st == 201:
+            res_id = body.get("reservation_id")
+            for seat in body.get("seats", []):
+                reserved_seats[seat] = res_id
+                
+    unique_seats_reserved = len(reserved_seats)
     
-    # Reconciliation
+    show = await client.get_show(show_id)
+    db_confirmed_plus_held = show['confirmed'] + show['held']
+    invariant_ok = (show['available'] + db_confirmed_plus_held == show['total_seats'])
+        
+    report = {
+        "requests": args.requests,
+        "elapsed_sec": elapsed,
+        "throughput_req_per_sec": args.requests / elapsed,
+        "status_counts": {str(k): v for k, v in status_counts.items()},
+        "error_reasons": reasons,
+        "latency_ms": {
+            "p50": p50 * 1000,
+            "p95": p95 * 1000,
+            "p99": p99 * 1000
+        },
+        "reconciliation": {
+            "unique_seats_reserved": unique_seats_reserved,
+            "db_confirmed_plus_held": db_confirmed_plus_held,
+            "invariant_ok": invariant_ok
+        }
+    }
+    with open("burst_report.json", "w") as f:
+        json.dump(report, f, indent=2)
+
+    check_no_server_errors(status_counts, "Stampede")
+    
+    # Check double booking
     reserved_seats = {}
     for st, body, _ in results:
         if st == 201:
@@ -277,32 +317,16 @@ async def run_scenario_stampede(client: BurstClient, args):
                     sys.exit(1)
                 reserved_seats[seat] = res_id
                 
-    unique_seats_reserved = len(reserved_seats)
-    
-    show = await client.get_show(show_id)
     print("\nShow Reconciliation:")
-    print(f"Total: {show['total_seats']}, Available: {show['available']}, Confirmed/Held: {show['confirmed'] + show['held']}")
+    print(f"Total: {show['total_seats']}, Available: {show['available']}, Confirmed/Held: {db_confirmed_plus_held}")
     
-    if show['available'] + show['confirmed'] + show['held'] != show['total_seats']:
+    if not invariant_ok:
         print("[FAIL] Invariant violation: total seats mismatch")
         sys.exit(1)
         
-    if unique_seats_reserved != (show['confirmed'] + show['held']):
-        print(f"[FAIL] Seat mismatch: unique seats in 201s ({unique_seats_reserved}) != confirmed+held in DB ({show['confirmed'] + show['held']})")
+    if unique_seats_reserved != db_confirmed_plus_held:
+        print(f"[FAIL] Seat mismatch: unique seats in 201s ({unique_seats_reserved}) != confirmed+held in DB ({db_confirmed_plus_held})")
         sys.exit(1)
-        
-    report = {
-        "throughput_req_per_sec": args.requests / elapsed,
-        "status_counts": status_counts,
-        "error_reasons": reasons,
-        "latency_ms": {
-            "p50": p50 * 1000,
-            "p95": p95 * 1000,
-            "p99": p99 * 1000
-        }
-    }
-    with open("burst_report.json", "w") as f:
-        json.dump(report, f, indent=2)
     
     print("\nMetrics (partial):")
     metrics = await client.get_metrics()
@@ -316,7 +340,7 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://localhost:8080")
     parser.add_argument("--concurrency", type=int, default=100)
-    parser.add_argument("--requests", type=int, default=20000) # reduced default for fast local run, use 20000 for full test
+    parser.add_argument("--requests", type=int, default=20000)
     parser.add_argument("--users", type=int, default=500)
     parser.add_argument("--admin-key", default=os.getenv("ADMIN_KEY", ""))
     
