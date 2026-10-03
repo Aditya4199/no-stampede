@@ -50,3 +50,10 @@ postgres.zip
 *.log
 fly_logs*.txt
 get_logs.py
+
+# scratch / generated
+/test_*.py
+/fix_*.py
+*_output*.txt
+out*.txt
+burst_report.json
