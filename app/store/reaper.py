@@ -33,11 +33,8 @@ async def reap_expired_holds():
                         """,
                         now
                     )
-                    
-                    if not expired:
-                        continue
-
-                    logger.info(f"Reaping {len(expired)} expired reservations")
+                    if expired:
+                        logger.info(f"Reaping {len(expired)} expired reservations")
 
                     expired_sorted = sorted(expired, key=lambda r: str(r["reservation_id"]))
                     for row in expired_sorted:
