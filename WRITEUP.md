@@ -151,4 +151,4 @@ The system is **CP** (CAP). A seat is a unique physical asset; double-booking is
 
 ## AI Usage
 
-AI tools were used as a pair-programming partner to scaffold boilerplate, generate asyncpg pool logic, and write the Python test suite. Core architectural decisions — deterministic row-locking, the pre-check/lock-check two-phase pattern, the idempotency hash scheme, and the 429 admission semaphore — were designed based on the problem constraints, with AI handling implementation details.
+Antigravity/Gemini generated the initial code and subsequent refactors. Claude reviewed iterations and found issues including a transaction-scope regression, a 429 relabelling mistake, a quota leak on hold takeover, a reaper connection hold, and missing cancellation retries. The human decided the core architecture and trade-offs (e.g. strict CP vs AP, lock ordering), directed the AI which fixes to apply, and accepted or rejected changes based on correctness under load.

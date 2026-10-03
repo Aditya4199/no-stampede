@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
 from app.store.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -36,7 +35,6 @@ async def reap_expired_holds():
                     )
                     
                     if not expired:
-                        await asyncio.sleep(5)
                         continue
 
                     logger.info(f"Reaping {len(expired)} expired reservations")
