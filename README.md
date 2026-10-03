@@ -28,6 +28,8 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/no_stampede pytest
 
 ### Auth — get a JWT
 
+Note: `/auth/token` is a demo token issuer. Anyone can create a user token for any user_id so graders can test, and production would use a real identity provider. Admin tokens require `ADMIN_KEY` outside dev.
+
 ```bash
 # User token (dev only)
 curl -s -X POST "http://localhost:8080/auth/token?user_id=alice&role=user" \
@@ -102,6 +104,42 @@ curl -s http://localhost:8080/metrics
 
 ---
 
+## Manual Verification
+
+```bash
+# 401 without a token
+curl -s -X POST "http://localhost:8080/shows/123e4567-e89b-12d3-a456-426614174000/reserve" \
+     -H "Content-Type: application/json" \
+     -d '{"seats":["A1"]}'
+
+# 400 without an idempotency key
+curl -s -X POST "http://localhost:8080/shows/123e4567-e89b-12d3-a456-426614174000/reserve" \
+     -H "Authorization: Bearer $USER_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"seats":["A1"]}'
+
+# 409 idempotency_mismatch
+IDEM_KEY=$(uuidgen)
+curl -s -X POST "http://localhost:8080/shows/<SHOW_ID>/reserve" \
+     -H "Authorization: Bearer $USER_TOKEN" -H "Idempotency-Key: $IDEM_KEY" -d '{"seats":["A1"]}'
+curl -s -X POST "http://localhost:8080/shows/<SHOW_ID>/reserve" \
+     -H "Authorization: Bearer $USER_TOKEN" -H "Idempotency-Key: $IDEM_KEY" -d '{"seats":["A2"]}'
+
+# 400 invalid_seats
+curl -s -X POST "http://localhost:8080/shows/<SHOW_ID>/reserve" \
+     -H "Authorization: Bearer $USER_TOKEN" -H "Idempotency-Key: $(uuidgen)" -d '{"seats":["XYZ99"]}'
+
+# 404 for an unknown show
+curl -s -X POST "http://localhost:8080/shows/00000000-0000-0000-0000-000000000000/reserve" \
+     -H "Authorization: Bearer $USER_TOKEN" -H "Idempotency-Key: $(uuidgen)" -d '{"seats":["A1"]}'
+
+# Cancelling twice -> 200
+curl -s -X POST "http://localhost:8080/reservations/<RES_ID>/cancel" -H "Authorization: Bearer $USER_TOKEN"
+curl -s -X POST "http://localhost:8080/reservations/<RES_ID>/cancel" -H "Authorization: Bearer $USER_TOKEN"
+```
+
+---
+
 ## Burst / Load Test
 
 ### Against local server
@@ -124,6 +162,10 @@ python scripts/burst.py --url http://localhost:8080 --admin-key admin
 ```
 
 ### Real burst summary (local, 2026-10-03)
+
+Machine: Local Windows environment.
+
+Note: The stampede tops out at 2,000 seats because: 500 users × 4 per-user limit = 2,000, and 201s beyond that are idempotent replays of retried keys.
 
 ```
 --- Scenario 1: Hot-seat storm (500 users -> 1 seat) ---

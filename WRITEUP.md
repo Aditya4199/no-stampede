@@ -53,7 +53,7 @@ req_hash = hashlib.sha256(f"{show_id}-{','.join(sorted_seats)}".encode()).hexdig
 
 The flow:
 1. **Fast-path read** (before the transaction): `SELECT … FROM idempotency_keys WHERE user_id=$1 AND key=$2`. If the row exists and has a stored `response`, return it immediately — no DB write needed.
-2. **Inside the transaction**: `INSERT INTO idempotency_keys … ON CONFLICT (user_id, key) DO NOTHING`. If the insert lands, this is a new request. If it's a no-op, read the stored row `FOR UPDATE`.  
+2. **Inside the transaction**: `INSERT INTO idempotency_keys … ON CONFLICT (user_id, key) DO NOTHING` inside it, where a concurrent duplicate waits on the primary key and then replays the stored response.
    - Same hash → return cached response (exactly-once semantics).  
    - Different hash → `409 idempotency_mismatch`.
 
@@ -62,6 +62,8 @@ The flow:
 ## Holds & Expiry
 
 `hold_ttl_seconds` is an optional per-show setting (set via `PATCH /shows/{id}`). When non-null, new reservations are `held` rather than immediately `confirmed`, and `hold_expires_at = NOW() + interval`.
+
+Holds model a payment window that is cancelled or expires, and confirmation is out of scope.
 
 A background **Reaper** task polls for expired holds every few seconds:
 
@@ -87,6 +89,8 @@ An `asyncio.Semaphore(config.max_inflight_reserves)` gates the reserve endpoint.
 
 with `HTTP 429` and `Retry-After: 1`. The semaphore is **per process** — in a multi-machine deployment each replica sheds independently.
 
+The admission cap defaults to `DB_MAX_CONNS - 5` because each reserve uses exactly one connection, so admitted requests never wait on the pool.
+
 ---
 
 ## Error Code Reference
@@ -101,9 +105,13 @@ with `HTTP 429` and `Retry-After: 1`. The semaphore is **per process** — in a 
 | 409 | `seat_taken` | Seat confirmed or actively held |
 | 409 | `per_user_limit` | User quota exceeded |
 | 409 | `idempotency_mismatch` | Same key, different request body |
+| 409 | `already_expired` | Reservation already expired |
+| 409 | `conflict` | The reservation is currently busy |
 | 429 | `too_many_requests` | Admission semaphore timed out |
 | 503 | `service_unavailable` | DB pool unavailable — fail closed |
 | 500 | `internal_error` | Unexpected bug; never from domain logic |
+
+If all 3 lock retries time out, reserve returns 409 seat_taken.
 
 ---
 
@@ -113,10 +121,9 @@ Prometheus metrics are exposed at `GET /metrics`.
 
 | Alert | Query | Threshold |
 |-------|-------|-----------|
-| Any 5xx | `rate(http_requests_total{status=~"5.."}[1m]) > 0` | Immediate |
+| Any 5xx | `rate(http_requests_total{code=~"5.."}[1m]) > 0` | Immediate |
 | High 429 rate | `rate(reservations_declined_total{reason="too_many_requests"}[1m]) > 10` | Warning |
-| DB pool wait p99 | `histogram_quantile(0.99, db_pool_wait_seconds_bucket) > 2` | Warning |
-| Seat gauge drift | `seats_available + seats_held + seats_confirmed != seats_total` | Critical |
+| DB pool wait p99 | `histogram_quantile(0.99, rate(db_pool_wait_duration_seconds_bucket[5m])) > 2` | Warning |
 
 Key metrics:
 - `reservations_confirmed_total{show_id}` — bookings per show.
@@ -151,4 +158,11 @@ The system is **CP** (CAP). A seat is a unique physical asset; double-booking is
 
 ## AI Usage
 
-Antigravity/Gemini generated the initial code and subsequent refactors. Claude reviewed iterations and found issues including a transaction-scope regression, a 429 relabelling mistake, a quota leak on hold takeover, a reaper connection hold, and missing cancellation retries. The human decided the core architecture and trade-offs (e.g. strict CP vs AP, lock ordering), directed the AI which fixes to apply, and accepted or rejected changes based on correctness under load.
+Antigravity (Gemini) generated the code. Claude reviewed each iteration and caught bugs:
+- the 503->429 relabel
+- the transaction-scope regression
+- the quota leak on hold takeover
+- the reaper holding a connection
+- missing cancel retries
+
+I chose the architecture and decided which changes to accept.

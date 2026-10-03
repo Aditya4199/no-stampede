@@ -8,51 +8,46 @@ This document records the human-AI collaborative decisions, generated components
 - **Commit**: `chore: bootstrap python service with health endpoint`
 - **Model**: Gemini 3.8 Flash (High)
 - **Generated**:
-  - Python project structure: `app/`, `app/api/`, `app/store/`, `app/auth/`, `app/metrics/`, `tests/`.
-  - FastAPI application with lifespan context manager for startup and graceful shutdown (`app/main.py`).
-  - Structured JSON logger (`JSONFormatter`) outputting single-line JSON records to stdout.
-  - Environment-based configuration loader (`app/config.py`) loading `PORT`, `DATABASE_URL`, `JWT_SECRET`, and `DB_MAX_CONNS` with defaults.
-  - Liveness probe handler `GET /healthz` returning `{"status": "ok"}` (`app/api/health.py`).
-  - Unit tests for configuration loading and async integration tests for `/healthz` using `httpx.AsyncClient` (`tests/test_config.py`, `tests/test_health.py`).
-  - Build and dependency management: `requirements.txt`, `Makefile`, `.gitignore`, `pytest.ini`, `README.md`.
+  - Python project structure, FastAPI application, JSON logger, environment-based config, liveness probe.
 - **Human Decisions / Clarifications**:
-  - Aditya requested a stack pivot from Go to Python.
-  - Agreed via interactive alignment to:
-    1. Reset Git commit history cleanly so Phase 1 starts directly with the Python service.
-    2. Use FastAPI + `asyncpg` for maximum async performance with plain SQL and zero ORM overhead.
-    3. Adopt `active_count` (or `seat_count`) for the `user_show_quota` table to cleanly account for all active seats (held + confirmed) against `per_user_limit`.
+  - Aditya requested a stack pivot from Go to Python. Reset Git commit history cleanly. Used FastAPI + `asyncpg`.
 
 ### Phase 2 — Schema Migrations & Application Lifecycle
 - Implemented robust migration runner using `pg_advisory_lock`.
-- Added application lifecycle hooks for DB pooling and migrations.
-- Built `/readyz` endpoint.
+- Added application lifecycle hooks for DB pooling and migrations. Built `/readyz` endpoint.
 
 ### Phase 3 — Internal API - Create Show
-- Added `POST /internal/shows` endpoint.
-- Implemented bulk insert for seat generation in a single transaction.
+- Added `POST /shows` endpoint. Implemented bulk insert for seat generation.
 
 ### Phase 4 — Internal API - Show Configuration
-- Added `POST /internal/shows/{show_id}` endpoint.
-- Updated `hold_ttl_seconds` setting for a show.
+- Added `PATCH /shows/{show_id}` endpoint. Updated `hold_ttl_seconds` setting for a show.
 
-### Phase 4.1 — Alignment, Security, and Spec Compliance
-- **Bugs found during review**:
-  - `POST /shows` and `PATCH /internal/shows/{id}` had no authentication. Fixed by adding JWT role checking (requires `role=admin`).
-  - DB failures threw unhandled 500s. Fixed by implementing a `DomainError` exception handler and mapping `asyncpg` timeout/connection errors to `503 Service Unavailable` with `Retry-After: 5`.
-  - The request shape for `POST /shows` allowed unbounded memory allocation with `total_seats`. Fixed by migrating to taking an explicit `seats[]` array and validating it using pydantic (`max_length=10000`).
-  - Tests only used mocks. Re-wrote `test_shows.py` and `test_internal_shows.py` to target the actual Postgres database spun up locally.
-  - Test migration didn't verify a successful insert count. Updated to check `count == 1`.
-  - `docker-compose.yml` had obsolete `version` tag. Cleaned it up and added `app` build to test from a clean clone.
-- **Architectural changes**:
-  - Created `/shows/{id}` endpoint combining counts of seats by status along with a JSON-aggregated list of all seats. 
-  - Restricted `/auth/token` for generating `role=admin` tokens unless running in `dev` or explicitly authorized via `ADMIN_KEY`.
+### Phase 5 — Cancel Reservation
+- **Generated**: `POST /reservations/{id}/cancel` endpoint logic.
+- **Human Decisions**: Enforced owner-only cancellation (404 instead of 403 to prevent existence leaking).
 
-### Phase 9 � Burst tool
+### Phases 6–7 — Holds and the Reaper
+- **Generated**: `hold_ttl_seconds` expiration logic in reservations, and a background task (`reaper.py`) to periodically free expired seats.
+- **Human Decisions**: Designed the "expired-hold takeover" model so the locking transaction natively overwrites expired holds without waiting for the reaper.
+
+### Phase 8 — Metrics
+- **Generated**: Prometheus `/metrics` endpoint with reservation counters and latency histograms.
+- **Human Decisions**: Tied metric labels strictly to domain outcomes (`seat_taken`, `per_user_limit`, `idempotency_mismatch`).
+
+### Phase 9 — Burst tool
 - **Commit**: `feat: add python burst testing harness and fix requirements`
 - **Model**: Gemini 3.1 Pro (High)
-- **Generated**:
-  - Load-testing harness `scripts/burst.py` wrapping scenarios (hot-seat storm, per-user limits, idempotency, spoofing, and stampede).
-  - Wrapper script `burst.sh` to trigger the Python burst test.
-- **Human Decisions / Clarifications**:
-  - Python was chosen over Go for the test client to keep the tech stack unified across the repo.
-  - Fixed Windows Unicode encoding and caught ReadErrors for httpx to ensure the script completes without crashing.
+- **Generated**: Load-testing harness `scripts/burst.py` wrapping scenarios.
+- **Human Decisions / Clarifications**: Python was chosen over Go for the test client.
+
+### Phase 10 — Hardening passes
+- **Generated**: Updates to CI versions, code cleanups, load-shedding semaphores.
+- **Human Decisions**: Directed the AI to prioritize CP (Consistency) over AP, enforcing 429 shedding instead of risking DB starvation.
+
+### Phase 11 — The Fly deploy
+- **Generated**: `fly.toml` and Dockerfile configurations.
+- **Human Decisions**: Ensured memory limits and concurrency settings in Fly matched the `DB_MAX_CONNS` assumptions.
+
+### External Claude review loop
+- **Generated**: Feedback identifying edge cases in the architecture.
+- **Human Decisions**: Directed the AI to apply fixes for a transaction-scope regression, a 429 relabelling mistake, a quota leak on hold takeover, a reaper connection hold, and missing cancel retries.
