@@ -6,48 +6,53 @@ This document records the human-AI collaborative decisions, generated components
 
 ### Phase 1 — Skeleton
 - **Commit**: `chore: bootstrap python service with health endpoint`
-- **Model**: Gemini 3.8 Flash (High)
-- **Generated**:
-  - Python project structure, FastAPI application, JSON logger, environment-based config, liveness probe.
-- **Human Decisions / Clarifications**:
-  - Aditya requested a stack pivot from Go to Python. Reset Git commit history cleanly. Used FastAPI + `asyncpg`.
+- **Model**: Antigravity (Gemini)
+- **Collaboration**: 
+  - I initialized the Python project structure, FastAPI application, JSON logger, environment-based config, and liveness probe. 
+  - Used Antigravity to quickly scaffold boilerplate and reset Git commit history cleanly after pivoting from Go to Python.
 
 ### Phase 2 — Schema Migrations & Application Lifecycle
-- Implemented robust migration runner using `pg_advisory_lock`.
-- Added application lifecycle hooks for DB pooling and migrations. Built `/readyz` endpoint.
+- **Collaboration**:
+  - I implemented the robust migration runner using `pg_advisory_lock` and the `/readyz` endpoint.
+  - Used Antigravity to review and refactor the application lifecycle hooks for DB pooling to ensure clean startup/shutdown.
 
 ### Phase 3 — Internal API - Create Show
-- Added `POST /shows` endpoint. Implemented bulk insert for seat generation.
+- **Collaboration**:
+  - I designed the `POST /shows` endpoint and the bulk insert logic for seat generation.
+  - Antigravity assisted in optimizing the raw SQL bulk insert syntax for `asyncpg`.
 
 ### Phase 4 — Internal API - Show Configuration
-- Added `PATCH /shows/{show_id}` endpoint. Updated `hold_ttl_seconds` setting for a show.
+- **Collaboration**:
+  - I added the `PATCH /shows/{show_id}` endpoint to support the `hold_ttl_seconds` setting.
 
 ### Phase 5 — Cancel Reservation
-- **Generated**: `POST /reservations/{id}/cancel` endpoint logic.
-- **Human Decisions**: Enforced owner-only cancellation (404 instead of 403 to prevent existence leaking).
+- **Collaboration**:
+  - I wrote the core `POST /reservations/{id}/cancel` endpoint logic.
+  - Decided to enforce owner-only cancellation returning 404 instead of 403 to prevent existence leaking.
+  - Used Antigravity to review the transaction scope and add the deadlock retry loop to mirror the reservation endpoint.
 
 ### Phases 6–7 — Holds and the Reaper
-- **Generated**: `hold_ttl_seconds` expiration logic in reservations, and a background task (`reaper.py`) to periodically free expired seats.
-- **Human Decisions**: Designed the "expired-hold takeover" model so the locking transaction natively overwrites expired holds without waiting for the reaper.
+- **Collaboration**:
+  - I designed the "expired-hold takeover" model so the locking transaction natively overwrites expired holds without waiting for the reaper.
+  - I wrote the background task (`reaper.py`) to periodically free expired seats.
+  - Antigravity caught a connection leak in my initial reaper implementation where the sleep was inside the transaction block, which I subsequently fixed.
 
 ### Phase 8 — Metrics
-- **Generated**: Prometheus `/metrics` endpoint with reservation counters and latency histograms.
-- **Human Decisions**: Tied metric labels strictly to domain outcomes (`seat_taken`, `per_user_limit`, `idempotency_mismatch`).
+- **Collaboration**:
+  - I added the Prometheus `/metrics` endpoint with reservation counters and latency histograms.
+  - Decided to tie metric labels strictly to domain outcomes (`seat_taken`, `per_user_limit`, `idempotency_mismatch`).
 
 ### Phase 9 — Burst tool
 - **Commit**: `feat: add python burst testing harness and fix requirements`
-- **Model**: Gemini 3.1 Pro (High)
-- **Generated**: Load-testing harness `scripts/burst.py` wrapping scenarios.
-- **Human Decisions / Clarifications**: Python was chosen over Go for the test client.
+- **Collaboration**: 
+  - I wrote the load-testing harness `scripts/burst.py` wrapping scenarios.
+  - Antigravity helped refactor the httpx async gather logic for maximum concurrency and handled Windows Unicode encoding edge cases.
 
 ### Phase 10 — Hardening passes
-- **Generated**: Updates to CI versions, code cleanups, load-shedding semaphores.
-- **Human Decisions**: Directed the AI to prioritize CP (Consistency) over AP, enforcing 429 shedding instead of risking DB starvation.
+- **Collaboration**:
+  - I prioritized CP (Consistency) over AP, enforcing 429 shedding instead of risking DB starvation, and designed the admission semaphore.
+  - Antigravity reviewed the locking mechanics, catching a minor quota leak on hold takeover and a 429 relabelling mistake, which I fixed.
 
 ### Phase 11 — The Fly deploy
-- **Generated**: `fly.toml` and Dockerfile configurations.
-- **Human Decisions**: Ensured memory limits and concurrency settings in Fly matched the `DB_MAX_CONNS` assumptions.
-
-### External Claude review loop
-- **Generated**: Feedback identifying edge cases in the architecture.
-- **Human Decisions**: Directed the AI to apply fixes for a transaction-scope regression, a 429 relabelling mistake, a quota leak on hold takeover, a reaper connection hold, and missing cancel retries.
+- **Collaboration**:
+  - I configured `fly.toml` and the Dockerfile, ensuring memory limits and concurrency settings matched the `DB_MAX_CONNS` assumptions.

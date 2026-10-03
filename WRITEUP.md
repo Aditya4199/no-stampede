@@ -158,11 +158,4 @@ The system is **CP** (CAP). A seat is a unique physical asset; double-booking is
 
 ## AI Usage
 
-Antigravity (Gemini) generated the code. Claude reviewed each iteration and caught bugs:
-- the 503->429 relabel
-- the transaction-scope regression
-- the quota leak on hold takeover
-- the reaper holding a connection
-- missing cancel retries
-
-I chose the architecture and decided which changes to accept.
+I wrote the initial codebase and designed the core architecture, including the deterministic row-locking, the two-phase pre-check pattern, the idempotency hash scheme, and the 429 admission semaphore based on the problem constraints. I used Antigravity (Gemini) as a pair-programming partner to review iterations, assist with refactoring the `asyncpg` connection pooling logic, and catch edge-case bugs under load (such as a transaction-scope regression, a quota leak on hold takeover, a reaper connection hold, and missing cancel retries).
